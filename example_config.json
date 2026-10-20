@@ -9,8 +9,14 @@
     "chips_across": 2,
     "modules_z": 10,
     "chips_per_module_z": 4,
-    "dead_x_mm": 0.2,
-    "dead_z_mm": 0.2
+    "chip_width_cm": 2.6,
+    "chip_length_cm": 3.0,
+    "eoc_width_mm": 2.0,
+    "chip_gap_u_mm": 0.0,
+    "chip_gap_z_mm": 0.0,
+    "module_gap_z_mm": 0.0,
+    "dead_x_mm": 0.0,
+    "dead_z_mm": 0.0
   },
   "n_tracks": 15000,
   "eta_max": 2,

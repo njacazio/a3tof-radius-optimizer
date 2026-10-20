@@ -19,6 +19,15 @@ class Geometry:
     chips_across: int = 2
     modules_z: int = 10
     chips_per_module_z: int = 4
+    # Chip orientation: 26 mm across the stave (u), 30 mm along the beam (z).
+    chip_width_cm: float = 2.6
+    chip_length_cm: float = 3.0
+    # One asymmetric end-of-column band, along the 26 mm edge at +z.
+    eoc_width_mm: float = 2.0
+    # Optional mechanical gaps. Zero until measured dimensions are supplied.
+    chip_gap_u_mm: float = 0.0
+    chip_gap_z_mm: float = 0.0
+    module_gap_z_mm: float = 0.0
     dead_x_mm: float = 0.0
     dead_z_mm: float = 0.0
     phi_offset_deg: float = 0.0
@@ -38,13 +47,40 @@ class Geometry:
             raise ValueError('Angolo fuori intervallo.')
         if not 1 <= self.chips_across <= 10 or not 1 <= self.modules_z <= 100 or not 1 <= self.chips_per_module_z <= 20:
             raise ValueError('Segmentazione non valida.')
-        if self.dead_x_mm < 0 or self.dead_z_mm < 0:
-            raise ValueError('I margini passivi devono essere >= 0.')
-        if 2 * self.dead_x_mm >= 10 * self.stave_width_cm / self.chips_across:
+        if self.chip_width_cm <= 0 or self.chip_length_cm <= 0:
+            raise ValueError('Le dimensioni del chip devono essere positive.')
+        if any(v < 0 for v in (self.dead_x_mm, self.dead_z_mm, self.eoc_width_mm,
+                              self.chip_gap_u_mm, self.chip_gap_z_mm, self.module_gap_z_mm)):
+            raise ValueError('Bordi inattivi e distanze tra chip/moduli devono essere >= 0.')
+        if 2 * self.dead_x_mm >= 10 * self.chip_width_cm:
             raise ValueError('Margine morto X troppo grande rispetto al chip.')
-        if 2 * self.dead_z_mm >= 10 * self.stave_length_cm / self.chips_z:
-            raise ValueError('Margine morto Z troppo grande rispetto al chip.')
+        if self.eoc_width_mm + 2 * self.dead_z_mm >= 10 * self.chip_length_cm:
+            raise ValueError('End-of-column + margini Z troppo grandi rispetto al chip.')
+        lay = chip_layout(self)
+        if lay['span_u'] > self.stave_width_cm + 1.e-9:
+            raise ValueError('Il numero di chip con le dimensioni/gap indicati supera la larghezza dello stave.')
+        if lay['span_z'] > self.stave_length_cm + 1.e-9:
+            raise ValueError('Il numero di chip con le dimensioni/gap indicati supera la lunghezza dello stave.')
         return self
+
+
+def chip_layout(g: Geometry):
+    """Fixed-chip tiling, centered inside a larger mechanical stave envelope.
+
+    Local u: transverse chip edge 26 mm; local z: chip edge 30 mm.
+    EOC occupies the last eoc_width_mm in +z on *each* chip.
+    """
+    du = g.chip_gap_u_mm / 10.0
+    dz = g.chip_gap_z_mm / 10.0
+    dm = g.module_gap_z_mm / 10.0
+    step_u = g.chip_width_cm + du
+    step_z = g.chip_length_cm + dz
+    module_length = g.chips_per_module_z * g.chip_length_cm + (g.chips_per_module_z - 1) * dz
+    module_pitch = module_length + dm
+    span_u = g.chips_across * g.chip_width_cm + (g.chips_across - 1) * du
+    span_z = g.modules_z * module_length + (g.modules_z - 1) * dm
+    return dict(step_u=step_u, step_z=step_z, module_length=module_length,
+                module_pitch=module_pitch, span_u=span_u, span_z=span_z)
 
 
 @dataclass(frozen=True)
@@ -70,30 +106,33 @@ def make_tracks(n=15000, eta_max=2.0, sigma_z_cm=0.0, seed=12345):
 
 
 def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
-    """Find intersections with each finite stave plane and its rectangular active chips.
+    """Straight-line intersections with finite staves and independently sized chips.
 
-    Handles overlaps by logical OR: a track counts once if any active chip is crossed.
-    A chip dead edge is a symmetric margin on *each* side of every chip.
+    Each chip has 26 mm transverse width, 30 mm longitudinal length by default.
+    Its 2 mm end-of-column is a *single* inactive strip at its +z end.
+    Overlapping staves recover hits (logical OR). Mechanical margins and optional
+    inter-chip/module gaps remain insensitive, rather than stretching chip sizes.
     """
     g = geometry.validate()
+    lay = chip_layout(g)
     phi, eta, z0 = tracks.phi, tracks.eta, tracks.z0
     n = tracks.n
     active = np.zeros(n, dtype=bool)
     physical = np.zeros(n, dtype=bool)
+    sensor = np.zeros(n, dtype=bool)
+    eoc_only = np.zeros(n, dtype=bool)
     sinheta = np.sinh(eta)
     alpha = np.deg2rad(g.tilt_deg)
     radial_projection = g.radius_cm * np.cos(alpha)
     u_center_offset = g.radius_cm * np.sin(alpha)
-    pitch_x = g.stave_width_cm / g.chips_across
-    pitch_z = g.stave_length_cm / g.chips_z
-    dead_x = g.dead_x_mm / 10.0
+    dead_u = g.dead_x_mm / 10.0
     dead_z = g.dead_z_mm / 10.0
+    eoc = g.eoc_width_mm / 10.0
     offset = np.deg2rad(g.phi_offset_deg)
     for stave in range(g.n_staves):
         theta = offset + stave * (2 * np.pi / g.n_staves) + alpha
         delta = phi - theta
         denom = np.cos(delta)
-        # Positive radial direction and finite intersection, no line pointing backwards.
         candidate = denom > 1.e-10
         if not np.any(candidate):
             continue
@@ -105,37 +144,58 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
         physical |= inside
         if not np.any(inside & ~active):
             continue
-        xcell = np.mod(u + g.stave_width_cm / 2, pitch_x)
-        zcell = np.mod(z + g.stave_length_cm / 2, pitch_z)
-        hit = inside & (xcell >= dead_x) & (xcell <= pitch_x - dead_x) & (zcell >= dead_z) & (zcell <= pitch_z - dead_z)
+
+        # Chips occupy a known-sized, centered subarray of the mechanical stave.
+        coord_u = u + lay['span_u'] / 2
+        col = np.floor(coord_u / lay['step_u'])
+        local_u = coord_u - col * lay['step_u']
+        chip_u = (col >= 0) & (col < g.chips_across) & (local_u >= 0) & (local_u < g.chip_width_cm)
+
+        coord_z = z + lay['span_z'] / 2
+        mod = np.floor(coord_z / lay['module_pitch'])
+        local_module_z = coord_z - mod * lay['module_pitch']
+        row = np.floor(local_module_z / lay['step_z'])
+        local_z = local_module_z - row * lay['step_z']
+        chip_z = ((mod >= 0) & (mod < g.modules_z) &
+                  (row >= 0) & (row < g.chips_per_module_z) &
+                  (local_z >= 0) & (local_z < g.chip_length_cm))
+        on_chip = inside & chip_u & chip_z
+        sensor |= on_chip
+        is_eoc = on_chip & (local_z >= g.chip_length_cm - eoc)
+        eoc_only |= is_eoc
+        hit = (on_chip & (local_u >= dead_u) & (local_u < g.chip_width_cm - dead_u) &
+               (local_z >= dead_z) & (local_z < g.chip_length_cm - eoc - dead_z))
         active |= hit
         if np.all(active):
             break
-    # Reference means: an *ideal* continuous cylinder of this radius and length,
-    # inside the user's generated eta/z0 sample. NOT all tracks from a physical event.
+
+    # Relative to an ideal continuous barrel, for the selected (phi,eta,z0) sample.
     reference = np.abs(z0 + g.radius_cm * sinheta) <= g.stave_length_cm / 2
     nref = int(np.count_nonzero(reference))
     nactive = int(np.count_nonzero(active))
-    hit_ref = int(np.count_nonzero(active & reference))
-    active_w = max(0, pitch_x - 2 * dead_x)
-    active_l = max(0, pitch_z - 2 * dead_z)
+    active_chip_width = g.chip_width_cm - 2 * dead_u
+    active_chip_length = g.chip_length_cm - eoc - 2 * dead_z
+    n_chips = g.n_staves * g.chips_across * g.chips_z
     metrics = {
         'eff_all': nactive / n,
-        'eff_reference': hit_ref / nref if nref else None,
+        'eff_reference': int(np.count_nonzero(active & reference)) / nref if nref else None,
         'ideal_acceptance': nref / n,
         'physical_fraction': float(np.mean(physical)),
+        'sensor_fraction': float(np.mean(sensor)),
         'dead_only_fraction': float(np.mean(physical & ~active)),
+        'eoc_loss_fraction': float(np.mean(eoc_only & ~active)),
         'missed_fraction': float(np.mean(~physical)),
         'n_tracks': n, 'n_ideal': nref,
         'n_active': nactive,
         'n_stave_only': int(np.count_nonzero(physical & ~active)),
         'n_outside': int(np.count_nonzero(~physical)),
-        'n_chips': g.n_staves * g.chips_across * g.chips_z,
-        'active_sensor_area_cm2': g.n_staves * g.chips_across * g.chips_z * active_w * active_l,
-        'active_chip_area_fraction': (active_w * active_l) / (pitch_x * pitch_z),
+        'n_chips': n_chips,
+        'active_sensor_area_cm2': n_chips * active_chip_width * active_chip_length,
+        'active_chip_area_fraction': (active_chip_width * active_chip_length) / (g.chip_width_cm * g.chip_length_cm),
+        'chip_area_cm2': g.chip_width_cm * g.chip_length_cm,
     }
     if return_masks:
-        return metrics, dict(active=active, physical=physical, reference=reference)
+        return metrics, dict(active=active, physical=physical, sensor=sensor, reference=reference)
     return metrics
 
 
@@ -169,23 +229,23 @@ def diagnostic_plots(g, tracks, masks, eta_max):
 
 def geometry_plot(g: Geometry):
     g.validate()
+    lay = chip_layout(g)
     base_x, base_y, active_x, active_y = [], [], [], []
     alpha = math.radians(g.tilt_deg)
     offset = math.radians(g.phi_offset_deg)
-    pw = g.stave_width_cm / g.chips_across
-    dx = g.dead_x_mm / 10
+    dead_u = g.dead_x_mm / 10
     for i in range(g.n_staves):
         phi = offset + 2 * math.pi * i / g.n_staves
         theta = phi + alpha
         center = np.array([g.radius_cm * math.cos(phi), g.radius_cm * math.sin(phi)])
-        u = np.array([-math.sin(theta), math.cos(theta)])
-        endpoints = [center + u * (j * g.stave_width_cm / 2) for j in (-1, 1)]
-        base_x.extend([endpoints[0][0], endpoints[1][0], None])
-        base_y.extend([endpoints[0][1], endpoints[1][1], None])
+        axis_u = np.array([-math.sin(theta), math.cos(theta)])
+        a, b = (center + axis_u * (j * g.stave_width_cm / 2) for j in (-1, 1))
+        base_x.extend([a[0], b[0], None])
+        base_y.extend([a[1], b[1], None])
         for ch in range(g.chips_across):
-            low = -g.stave_width_cm / 2 + ch * pw + dx
-            high = -g.stave_width_cm / 2 + (ch + 1) * pw - dx
-            a, b = center + u * low, center + u * high
+            low = -lay['span_u'] / 2 + ch * lay['step_u'] + dead_u
+            high = -lay['span_u'] / 2 + ch * lay['step_u'] + g.chip_width_cm - dead_u
+            a, b = center + axis_u * low, center + axis_u * high
             active_x.extend([a[0], b[0], None])
             active_y.extend([a[1], b[1], None])
     return {'staves_x': base_x, 'staves_y': base_y, 'active_x': active_x, 'active_y': active_y,
@@ -193,23 +253,27 @@ def geometry_plot(g: Geometry):
             'circle_y': (g.radius_cm * np.sin(np.linspace(0, 2 * np.pi, 361))).tolist()}
 
 
-
 def module_plot(g: Geometry):
-    """Rectangles representing one repeated 2D module in local stave u-z coordinates."""
-    chip_u = g.stave_width_cm / g.chips_across
-    length = g.stave_length_cm / g.modules_z
-    chip_z = length / g.chips_per_module_z
-    dx, dz = g.dead_x_mm / 10, g.dead_z_mm / 10
+    """One 2D module showing chips, single-sided EOC bands, and optional gaps."""
+    g.validate()
+    lay = chip_layout(g)
+    dz0 = g.dead_z_mm / 10
+    du0 = g.dead_x_mm / 10
+    eoc = g.eoc_width_mm / 10
     chips = []
     for i in range(g.chips_across):
         for j in range(g.chips_per_module_z):
-            ulo = -g.stave_width_cm / 2 + i * chip_u
-            zlo = -length / 2 + j * chip_z
+            ulo = -lay['span_u'] / 2 + i * lay['step_u']
+            zlo = -lay['module_length'] / 2 + j * lay['step_z']
             chips.append({
-                'outer': [ulo, zlo, ulo + chip_u, zlo + chip_z],
-                'active': [ulo + dx, zlo + dz, ulo + chip_u - dx, zlo + chip_z - dz],
+                'outer': [ulo, zlo, ulo + g.chip_width_cm, zlo + g.chip_length_cm],
+                'active': [ulo + du0, zlo + dz0, ulo + g.chip_width_cm - du0,
+                           zlo + g.chip_length_cm - eoc - dz0],
+                'eoc': [ulo, zlo + g.chip_length_cm - eoc,
+                        ulo + g.chip_width_cm, zlo + g.chip_length_cm],
             })
-    return {'chips': chips, 'width': g.stave_width_cm, 'length': length}
+    return {'chips': chips, 'width': g.stave_width_cm, 'length': lay['module_length'],
+            'eoc_width_mm': g.eoc_width_mm}
 
 
 def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_penalty_pp=0.0, target_radius_cm=21.0, seed=27):

@@ -1,77 +1,120 @@
-# iTOF Geometry Lab (ALICE 3)
+# iTOF Geometry Lab — ALICE 3
 
-A local Python + HTML dashboard for the geometric optimization of the **ALICE 3 inner TOF barrel**.
+Local Python + Flask web app for exploring and optimizing geometrical acceptance of an ALICE 3 iTOF barrel layer.
 
-## Start
+## Run (Linux)
 
 ```bash
-cd itof-optimizer
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
 
-Open **http://127.0.0.1:5000/** in your browser.
+Open **http://127.0.0.1:5000/**. JavaScript plots work offline: Plotly is bundled under `static/`.
 
-Python back end: `geometry.py`, `app.py`. HTML/JS front end: `templates/index.html`. Plotly JS is bundled in `static/` for offline plots. No ROOT/O2 dependency.
+## Geometry defaults
 
-On the page:
+### Design variables (scanned)
 
-1. Set the three design variables: radius, stave count and tilt angle. In the separate **fixed sensor parameters** section, set stave width/length, segmentation and passive edges (in mm **per side**, independently in transverse X and longitudinal Z). These remain unchanged throughout each optimization run.
-2. Set generated track sample: flat phi, flat eta, vertex Gaussian z-spread, random seed.
-3. Click **Simula geometria** to see transverse stave coverage, phi/eta efficiency, and an eta-vs-phi map.
-4. Choose search ranges and use **Ottimizza**. The seeded random search evaluates candidates using the *same* generated tracks; rank by an objective including optionally a cost penalty per stave and deviation from preferred radius. Click **Usa** to rerun a chosen design with higher statistics.
-5. Save and load configurations as JSON; export the full optimization table as CSV. Inspect the repeated module chip map, including inactive borders. Adjust `geometry.py` if changing the physics model.
+| Parameter | Default |
+| --- | ---: |
+| Cylinder radius | 21 cm |
+| Number of staves | 24 |
+| Stave tilt | 3° |
 
-## Definitions
+### Fixed stave and chip properties
 
-A track is a straight line from `(0,0,z0)` parametrized by `(phi, eta)`. Each iTOF stave is a finite plane at radius `r` and rotated by `phi_stave + 90° + tilt` in XY, matching the placement convention in ALICE O2. The script intersects each track with all finite stave planes and tests its local coordinates against chip segmentation and symmetric dead edges. Overlapping staves can recover lost hits. A track is counted once if at least one active chip is intercepted.
+| Parameter | Default |
+| --- | ---: |
+| Mechanical stave width | 5.42 cm |
+| Mechanical stave length | 129 cm |
+| Chips across stave (`u`) | 2 |
+| Modules along beam (`z`) | 10 |
+| Chips per module along `z` | 4 |
+| **Individual chip size** | **2.6 cm (u) × 3.0 cm (z)** |
+| **End-of-column strip** | **2.0 mm, single edge at +z** |
+| Extra inactive borders (each side) | 0 mm in both `u` and `z` |
+| Inter-chip gaps in `u` and `z` | 0 mm (not yet supplied) |
+| Inter-module gap in `z` | 0 mm (not yet supplied) |
 
-- **Global geometric efficiency**: tracks with ≥1 active chip intersection / all generated tracks (`phi ∈ [0,2π)`, `eta ∈ [-eta_max,eta_max]`).
-- **Ideal-reference efficiency**: tracks with ≥1 active chip intersection **and** intersecting an ideal cylindrical barrel within `±L/2` / number of generated tracks intersecting that ideal cylinder.
-- **Ideal acceptance**: generated tracks intersecting the ideal continuous barrel / generated tracks.
-- **Dead-only**: tracks crossing any physical stave but no active area / generated tracks.
+The **end-of-column runs along the 26 mm chip edge**, and extends 2 mm *inward along its 30 mm dimension*. The default active rectangle is therefore **26 × 28 mm = 728 mm²** out of 780 mm²: **93.33% active chip fraction**, before any extra dead borders and gaps.
 
-These are *geometric* efficiencies; they do **not** include intrinsic chip efficiency, material effects, magnetic bending, multiple scattering, hit merging, reconstruction, or time-to-track matching. In particular, a geometrically optimal radius does not imply optimal TOF PID or tracking. The dead-edge parameters are fixed chip properties: they enter the geometric efficiency calculation, but are never scanned or optimized. To study a different chip design, change them in the fixed sensor section and rerun the search.
+With 2 chips across and 40 chips longitudinally, the array envelope is **5.2 cm × 120 cm** (for zero gaps). It is centered in the larger 5.42 × 129 cm stave. The mechanically unoccupied portions are insensitive in this geometrical approximation: the chip is **not stretched** to fill the stave. If detailed module-FPC/stave-FPC placement or true inter-chip gaps become available, enter the measured gaps in the fixed-parameter section or adapt the placement model.
 
-### Baseline values
+The +z orientation is a *coordinate convention* for this first implementation. The figure supplied establishes the side of the chip carrying EOC and its width, but does not by itself determine alternating chip orientations, precise module offsets, or independent gaps; these are **not inferred**. Every chip currently carries EOC at +z in local stave coordinates. Extending this to a measured per-chip orientation map is straightforward.
 
-Extracted from the ALICE O2 `dev` code on 20 October 2026:
+**None of the chip properties, including EOC and additional dead margins, is optimized.** Only `radius_cm`, `n_staves`, `tilt_deg` may occur in scan bounds. The API explicitly rejects other scan variables.
 
-- `r = 21 cm`, `L = 129 cm`, `24` staves
-- stave width `5.42 cm`, stave tilt `3°`
-- `10` modules per stave, each with `2 × 4` chips (2 transverse, 4 longitudinal)
-- passive edges default to `0 mm` as **illustrative** settings; set the measured physical values before interpreting any result. `ChipSpecifics` contains passive-edge settings, but do not assume symmetric values are the final physical chip implementation. Dead area is **not** an optimization degree of freedom.
+## What is computed
 
-Source code:
+Tracks start at `(0,0,z0)` with flat generated azimuth/eta (and optionally Gaussian vertex z). Each line is intersected with the finite planar staves; a hit is counted only when its local coordinates fall within one of the *physical chip rectangles* and outside its EOC and any additional passive borders.
 
-- https://github.com/AliceO2Group/AliceO2/blob/dev/Detectors/Upgrades/ALICE3/IOTOF/simulation/src/Detector.cxx
-- https://github.com/AliceO2Group/AliceO2/blob/dev/Detectors/Upgrades/ALICE3/IOTOF/simulation/src/Layer.cxx
-- https://github.com/AliceO2Group/AliceO2/blob/dev/Detectors/Upgrades/ALICE3/IOTOF/base/include/IOTOFBase/IOTOFBaseParam.h
+- `eff_all`: trajectories hitting at least one active chip / all generated trajectories.
+- `eff_reference`: trajectories with an active hit *and* an intersection with an ideal radius-R cylinder inside |z| ≤ L/2, divided by trajectories reaching that ideal cylinder.
+- `physical_fraction`: fraction crossing some physical stave plane envelope.
+- `sensor_fraction`: fraction crossing at least one silicon chip footprint.
+- `dead_only_fraction`: fraction crossing a stave envelope but not an active chip (including FPC regions and physical gaps).
+- `active_chip_area_fraction`: geometrical active chip area / physical chip area (93.33% for the defaults).
 
-The earlier ALICE 3 conceptual study quoted `r = 19 cm`; this app intentionally uses the `dev` simulation default (`21 cm`) rather than assuming these different design snapshots are identical.
+Overlapping staves can recover otherwise inactive intersections. A trajectory counts once if any stave provides an active hit.
 
-## Tests
+These quantities represent **geometrical coverage, not tracking/reconstruction or matching efficiency**. No magnetic bending, detector material, scattering, sensor response, timing, or matching of TRK to iTOF hits is included.
+
+## Dashboard
+
+1. Change design variables (radius, stave count, tilt).
+2. Edit fixed chip size, EOC, extra dead edges and gaps when physical information becomes available.
+3. Simulate and inspect stave XY view, hit probability vs phi/eta, eta–phi map, and a detailed local module map. EOC is explicitly drawn in orange; active silicon is teal.
+4. Set scan ranges for the *three design parameters only* and optimize. The comparison uses the **same generated track sample** for each candidate. Results can be applied and exported as CSV.
+5. Save/load an entire configuration as JSON.
+
+## Test
 
 ```bash
 pip install pytest
 pytest -q
 ```
 
-## Scope for next iteration
+Tests cover: EOC asymmetry and orientation (+z), single-chip nominal area, chip-array envelope (no artificial stretching), validation, optimization bounds and preservation of fixed sensor geometry, and API request behavior if Flask is installed.
 
-- Import `TGeo` / real sensor placements from `o2sim_geometry.root` and use asymmetric chip readout/top/side dead edges.
-- Import track samples or O2 `MCTrack` branches; helix/ACTS propagation in B field.
-- Compute reconstruction efficiency and matching conditional on `pT, eta, phi, charge`; compare with geometric upper bounds.
-- Incorporate engineering constraints: maximum radius/occupied volume, material, stave budget/cost, minimum overlap and nonideal sensor response.
+## Implementation and endpoints
 
-## REST API
+- `geometry.py`: detector geometry, straight-line intersections, masks, metrics and optimization.
+- `app.py`: Flask application and REST API.
+- `templates/index.html`: dashboard, with Plotly JS bundled under `static/`.
+- `example_config.json`: JSON sample with nominal chip dimensions and fixed EOC.
 
 - `GET /api/defaults`
-- `POST /api/simulate` body `{ "geometry": { ... }, "n_tracks": 15000, "eta_max": 2, "vertex_sigma_z_cm": 0, "seed": 12345 }`
-- `POST /api/optimize` same body plus `{ "optimization": { "bounds": { "radius_cm": [18,25], "n_staves": [20,32], "tilt_deg": [-5,15] }, "n_candidates": 80, "stave_penalty_pp": 0.1 } }`
+- `POST /api/simulate`
+- `POST /api/optimize`
 
-The optimizer accepts bounds **only** for `radius_cm`, `n_staves`, and `tilt_deg`. Other geometry fields, including `dead_x_mm` and `dead_z_mm`, are taken from the submitted `geometry` object and are fixed during the full run. Bounds on dead area are explicitly rejected to catch stale clients.
+Example optimization body:
 
-Local use only: the web server listens to `127.0.0.1`, is not intended for public exposure.
+```json
+{
+  "geometry": {
+    "radius_cm": 21, "n_staves": 24, "tilt_deg": 3,
+    "chip_width_cm": 2.6, "chip_length_cm": 3.0,
+    "eoc_width_mm": 2.0
+  },
+  "n_tracks_opt": 4000,
+  "optimization": {
+    "bounds": {
+      "radius_cm": [18, 25],
+      "n_staves": [20, 32],
+      "tilt_deg": [-5, 15]
+    },
+    "n_candidates": 80
+  }
+}
+```
+
+The web service listens only on `127.0.0.1`. Use locally; this is not designed to be publicly exposed.
+
+## References for stave layout
+
+Baseline stave geometry in the ALICE O2 development code (chip dimensions and EOC values in this version come from the user's latest specifications):
+
+- https://github.com/AliceO2Group/AliceO2/blob/dev/Detectors/Upgrades/ALICE3/IOTOF/simulation/src/Detector.cxx
+- https://github.com/AliceO2Group/AliceO2/blob/dev/Detectors/Upgrades/ALICE3/IOTOF/simulation/src/Layer.cxx

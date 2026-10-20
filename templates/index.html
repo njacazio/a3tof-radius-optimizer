@@ -65,7 +65,7 @@
       <p class="hint">Solo raggio, numero di stave e tilt angle vengono variati durante la ricerca.</p>
     </section>
     <section class="group"><h2>02 · Sensori e altri parametri fissi</h2><div id="sensorFields"></div>
-      <p class="hint">Dimensioni, segmentazione e dead area del chip sono configurabili qui, ma <strong>restano costanti</strong> per tutti i candidati dell'ottimizzazione. I bordi morti X/Z sono misurati in mm per lato.</p>
+      <p class="hint">Chip nominale: <strong>26 mm trasversi (u) × 30 mm lungo z</strong>. La <strong>end-of-column (2 mm)</strong> è una sola fascia inattiva sul bordo a +z, lungo il lato da 26 mm. Tutti questi parametri sono <strong>fissi durante l'ottimizzazione</strong>. I margini morti aggiuntivi X/Z, se presenti, sono espressi in mm per lato; gap chip/modulo preimpostati a zero perché non ancora specificati.</p>
     </section>
     <section class="group"><h2>03 · Tracce generate</h2><div id="trackFields"></div>
       <p class="hint">Generazione uniforme in φ ed η, con vertice (x,y) = (0,0). Propagazione rettilinea; nessuna deflessione magnetica.</p>
@@ -97,7 +97,7 @@
       <section class="panel"><h2>Probabilità di hit vs φ</h2><div class="plot" id="phi"></div></section>
       <section class="panel"><h2>Probabilità di hit vs η</h2><div class="plot" id="eta"></div></section>
       <section class="panel"><h2>Mappa efficienza · η × φ</h2><div class="plot heat" id="heatmap"></div></section>
-      <section class="panel wide"><h2>Zoom su un modulo · chip e bordi inattivi (coordinate locali)</h2><div class="plot heat" id="module"></div></section>
+      <section class="panel wide"><h2>Zoom su un modulo · chip, aree attive ed end-of-column (coordinate locali)</h2><p class="hint">Verde = area attiva; arancione = fascia end-of-column; contorni = chip fisici. Gli spazi esterni sono regioni meccaniche inattive.</p><div class="plot heat" id="module"></div></section>
     </div>
     <section class="panel results" id="results" style="display:none">
       <div class="results-header"><div><div class="mark">Design space exploration</div><h2 style="margin:6px 0">Configurazioni migliori</h2></div><button class="secondary" onclick="downloadCSV()">Esporta CSV</button></div>
@@ -105,7 +105,7 @@
       <div class="plot short" id="scatter"></div>
       <div class="table-wrap"><table><thead><tr><th>#</th><th>r [cm]</th><th>Stave</th><th>Tilt [°]</th><th>Eff. [%]</th><th>Score [pp]</th><th></th></tr></thead><tbody id="table"></tbody></table></div>
     </section>
-    <div class="method"><strong>Perimetro del modello:</strong> ottimizza la copertura geometrica di un singolo layer iTOF, non l'efficienza di ricostruzione delle tracce. Il cilindro ideale di riferimento ha raggio r, lunghezza L e copertura azimutale completa. Il modello usa chip con bordi passivi simmetrici per lato. Non include materiali, scattering, B-field, timing, sensor response o matching TRK↔iTOF. Le dimensioni base (r=21 cm, 24 stave, 5,42 cm, 129 cm, tilt 3° e chip 2×4 per modulo) riprendono la geometria segmentata di AliceO2; i bordi passivi sono configurabili come proprietà fisse del sensore, non sono variabili di ottimizzazione.</div>
+    <div class="method"><strong>Perimetro del modello:</strong> ottimizza la copertura geometrica di un singolo layer iTOF, non l'efficienza di ricostruzione delle tracce. Il cilindro ideale di riferimento ha raggio r, lunghezza L e copertura azimutale completa. Il modello usa chip fisici da 26 × 30 mm, con un'unica end-of-column da 2 mm lungo il lato da 26 mm, collocata a +z; eventuali margini morti aggiuntivi sono simmetrici. Le dimensioni dello stave (5,42 × 129 cm) possono superare l'inviluppo dei chip, senza dilatarli artificialmente. Non include materiali, scattering, B-field, timing, sensor response o matching TRK↔iTOF. I parametri del chip sono configurabili ma non vengono ottimizzati.</div>
   </main>
 </div>
 <script>
@@ -116,7 +116,11 @@ const sensorSpec = [
  ['stave_width_cm','Larghezza stave [cm]',5.42,0.01],['stave_length_cm','Lunghezza stave [cm]',129,0.1],
  ['phi_offset_deg','φ offset [°]',0,0.1],['chips_across','Chip lungo X',2,1],
  ['modules_z','Moduli lungo Z',10,1],['chips_per_module_z','Chip / modulo lungo Z',4,1],
- ['dead_x_mm','Bordo morto X [mm/lato]',0,0.05],['dead_z_mm','Bordo morto Z [mm/lato]',0,0.05]
+ ['chip_width_cm','Lato trasverso chip [cm]',2.6,0.1],['chip_length_cm','Lato lungo Z chip [cm]',3.0,0.1],
+ ['eoc_width_mm','End-of-column [mm]',2,0.1],
+ ['chip_gap_u_mm','Gap chip trasverso [mm]',0,0.1],['chip_gap_z_mm','Gap chip lungo Z [mm]',0,0.1],
+ ['module_gap_z_mm','Gap fra moduli Z [mm]',0,0.1],
+ ['dead_x_mm','Altro bordo morto X [mm/lato]',0,0.05],['dead_z_mm','Altro bordo morto Z [mm/lato]',0,0.05]
 ];
 const gSpec = [...designSpec,...sensorSpec];
 const tSpec = [['n_tracks','Tracce per simulazione',15000,1000],['eta_max','|η| massimo',2,0.1],['vertex_sigma_z_cm','σ vertice Z [cm]',0,0.1],['seed','Random seed',12345,1]];
@@ -143,20 +147,21 @@ function showSimulation(result){
  document.getElementById('mIdeal').textContent=pct(m.eff_reference);
  document.getElementById('mDead').textContent=pct(m.dead_only_fraction);
  document.getElementById('mChips').textContent=m.n_chips.toLocaleString('it-IT');
- document.getElementById('mCounts').textContent=`${m.n_active}/${m.n_tracks} tracce attive · area sensibile ${m.active_sensor_area_cm2.toFixed(0)} cm²`;
+ document.getElementById('mCounts').textContent=`${m.n_active}/${m.n_tracks} tracce attive · frazione attiva/chip ${pct(m.active_chip_area_fraction)} · area sensibile ${m.active_sensor_area_cm2.toFixed(0)} cm²`;
  plot('xy',[
   {x:p.geometry.circle_x,y:p.geometry.circle_y,mode:'lines',name:'Raggio centrale',line:{color:'#54657d',dash:'dot',width:1}},
   {x:p.geometry.staves_x,y:p.geometry.staves_y,mode:'lines',name:'Stave fisico',line:{color:'#f6b96f',width:6}},
-  {x:p.geometry.active_x,y:p.geometry.active_y,mode:'lines',name:'Bande attive X',line:{color:'#62d3cb',width:4}}],
+  {x:p.geometry.active_x,y:p.geometry.active_y,mode:'lines',name:'Bande chip (u)',line:{color:'#62d3cb',width:4}}],
   {xaxis:{title:'X [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'Y [cm]'},legend:{orientation:'h',y:-0.2},margin:{l:48,r:15,t:10,b:70}});
  plot('phi',[{x:p.phi.x,y:p.phi.y,mode:'lines',name:'Hit',line:{color:'#62d3cb',width:2.5}}],{xaxis:{title:'φ [°]',range:[0,360]},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('eta',[{x:p.eta.x,y:p.eta.y,mode:'lines',name:'Hit',line:{color:'#f6b96f',width:2.5}}],{xaxis:{title:'η'},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('heatmap',[{type:'heatmap',x:p.heatmap.x,y:p.heatmap.y,z:p.heatmap.z,zmin:0,zmax:1,colorscale:[[0,'#1a2b45'],[0.5,'#2d7e92'],[1,'#69dfc8']],colorbar:{title:'Eff.'},hovertemplate:'φ %{x:.1f}°<br>η %{y:.2f}<br>Eff. %{z:.1%}<extra></extra>'}],{xaxis:{title:'φ [°]'},yaxis:{title:'η'}});
  const rect=(bounds)=>{const [x0,y0,x1,y1]=bounds;return {x:[x0,x1,x1,x0,x0],y:[y0,y0,y1,y1,y0]};};
  const modules=[];
- p.module.chips.forEach((chip,i)=>{let b=rect(chip.outer),a=rect(chip.active);
-  modules.push({x:b.x,y:b.y,mode:'lines',type:'scatter',showlegend:false,line:{color:'#f6b96f',width:2},hoverinfo:'skip'});
-  modules.push({x:a.x,y:a.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(98,211,203,0.35)',showlegend:false,line:{color:'#62d3cb',width:1},name:`Chip ${i+1}`,hovertemplate:'Area attiva<extra></extra>'});
+ p.module.chips.forEach((chip,i)=>{let b=rect(chip.outer),a=rect(chip.active),e=rect(chip.eoc);
+  modules.push({x:b.x,y:b.y,mode:'lines',type:'scatter',showlegend:false,line:{color:'#d8deed',width:2},hoverinfo:'skip'});
+  modules.push({x:a.x,y:a.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(98,211,203,0.40)',showlegend:i===0,line:{color:'#62d3cb',width:1},name:'Area attiva',hovertemplate:`Chip ${i+1} · area attiva<extra></extra>`});
+  if(p.module.eoc_width_mm>0)modules.push({x:e.x,y:e.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(246,185,111,0.70)',showlegend:i===0,line:{color:'#f6b96f',width:1},name:'End-of-column',hovertemplate:`Chip ${i+1} · EOC ${p.module.eoc_width_mm} mm<extra></extra>`});
  });
  plot('module',modules,{xaxis:{title:'u locale [cm]'},yaxis:{title:'z locale [cm]',scaleanchor:'x',scaleratio:1},margin:{l:60,r:10,t:10,b:55}});
 }

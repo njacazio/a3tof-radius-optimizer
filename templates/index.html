@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iTOF Geometry Lab · ALICE 3</title>
+  <script src="/static/plotly.min.js"></script>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#141e31; --panel2:#1b2840; --line:#324057; --text:#eef3f9; --muted:#9daec3; --accent:#62d3cb; --amber:#f6b96f; --red:#f98383; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif; }
+    .shell { display:grid; grid-template-columns:360px minmax(0,1fr); min-height:100vh; }
+    aside { background:#10182a; border-right:1px solid var(--line); padding:24px 20px; }
+    main { min-width:0; padding:26px clamp(20px,3vw,48px); }
+    .mark { font-size:12px; font-weight:800; color:var(--accent); letter-spacing:.19em; text-transform:uppercase; }
+    h1 { font-size:32px; letter-spacing:-.04em; line-height:1.1; margin:10px 0; }
+    h2 { font-size:16px; margin:0 0 16px; } h3 { font-size:14px; margin:0 0 12px; }
+    .subtitle,.muted { color:var(--muted); } .subtitle { margin:10px 0 24px; max-width:850px; }
+    .group { border-top:1px solid var(--line); padding:18px 0 10px; }
+    .group h2 { color:#d3e1ed; }
+    .field { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:5px 0; }
+    .field label { color:#c5d2e1; font-size:13px; }
+    input { color:var(--text); background:#0d1627; border:1px solid #46516a; border-radius:7px; padding:9px 9px; font:inherit; width:106px; max-width:100%; }
+    input:focus { outline:2px solid #62d3cb77; border-color:var(--accent); }
+    .buttons { display:flex; gap:10px; flex-wrap:wrap; }
+    button { background:var(--accent); border:1px solid transparent; color:#082528; font:600 13px system-ui; padding:11px 15px; cursor:pointer; border-radius:8px; }
+    button.secondary { background:var(--panel2); color:var(--text); border-color:#40506a; }
+    button:disabled { opacity:.45; cursor:wait; }
+    button:hover:not(:disabled) { filter:brightness(1.08); }
+    .sticky { position:sticky; bottom:0; margin:12px -20px -24px; background:linear-gradient(0deg,#10182a 82%,transparent); padding:22px 20px 18px; }
+    .hint { font-size:12px; color:var(--muted); margin:12px 0; }
+    .status { min-height:20px; margin-top:10px; font-size:12px; color:var(--accent); } .status.bad { color:var(--red); }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .metric { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; }
+    .metric strong { font-size:29px; line-height:1.1; letter-spacing:-.03em; display:block; margin:10px 0 6px; }
+    .metric span { font-size:12px; color:var(--muted); }
+    .metric small { color:#9baabe; display:block; margin-top:6px; }
+    .plots { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:17px; min-width:0; }
+    .plot { width:100%; height:360px; }
+    .wide { grid-column:1/-1; }
+    .short { height:295px; } .heat { height:380px; }
+    .grid-range { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+    .bound { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; align-items:center; }
+    .bound .label { grid-column:1/-1; font-size:12px; color:var(--muted); }
+    .bound input { width:100%; }
+    .results { margin-top:20px; } .results-header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .table-wrap { overflow-x:auto; margin-top:12px; } table { border-collapse:collapse; width:100%; white-space:nowrap; }
+    th,td { border-bottom:1px solid var(--line); padding:11px 10px; text-align:right; }
+    th { font-size:12px; color:var(--muted); font-weight:600; } th:first-child,td:first-child { text-align:left; }
+    tr:hover td { background:#202d42; } .use { padding:6px 12px; }
+    .method { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; color:#aebbd0; font-size:13px; }
+    .method strong { color:var(--text); }
+    @media(max-width:1150px) { .metrics { grid-template-columns:repeat(2,1fr); } }
+    @media(max-width:950px) { .shell { display:block; } aside { border-right:0; border-bottom:1px solid var(--line); } .sticky { position:static; margin:0; padding:12px 0; background:none; } }
+    @media(max-width:700px) { .plots { grid-template-columns:1fr; } .wide { grid-column:1; } .metrics { grid-template-columns:1fr 1fr; } h1 { font-size:26px; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="mark">ALICE 3 / iTOF</div>
+    <h1>Geometry Lab</h1>
+    <p class="muted">Editor della geometria, simulazione veloce e ricerca di configurazioni ottimali.</p>
+    <section class="group"><h2>01 · Variabili di progetto</h2><div id="geomFields"></div>
+      <p class="hint">Solo raggio, numero di stave e tilt angle vengono variati durante la ricerca.</p>
+    </section>
+    <section class="group"><h2>02 · Sensori e altri parametri fissi</h2><div id="sensorFields"></div>
+      <p class="hint">Dimensioni, segmentazione e dead area del chip sono configurabili qui, ma <strong>restano costanti</strong> per tutti i candidati dell'ottimizzazione. I bordi morti X/Z sono misurati in mm per lato.</p>
+    </section>
+    <section class="group"><h2>03 · Tracce generate</h2><div id="trackFields"></div>
+      <p class="hint">Generazione uniforme in φ ed η, con vertice (x,y) = (0,0). Propagazione rettilinea; nessuna deflessione magnetica.</p>
+    </section>
+    <section class="group"><h2>04 · Scansione / ottimizzazione</h2>
+      <p class="hint">Limiti inclusivi. Il numero di stave assume solo valori interi.</p>
+      <div id="boundFields"></div>
+      <div id="optimizationFields"></div>
+      <p class="hint">Score = 100 × efficienza globale − penalità per stave − penalità per |r − r_target|. Le penalità sono in punti percentuali.</p>
+    </section>
+    <div class="sticky">
+      <div class="buttons"><button id="run" onclick="simulate()">Simula geometria</button><button id="opt" class="secondary" onclick="runOptimization()">Ottimizza</button></div>
+      <div class="buttons" style="margin-top:10px"><button class="secondary" onclick="saveConfig()">Salva JSON</button><button class="secondary" onclick="document.getElementById('loadFile').click()">Carica JSON</button><input type="file" accept=".json,application/json" id="loadFile" style="display:none" onchange="loadConfig(event)"/><button class="secondary" onclick="resetConfig()">Ripristina baseline</button></div>
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+  </aside>
+  <main>
+    <div class="mark">Interactive acceptance study</div>
+    <h1>iTOF · Copertura geometrica</h1>
+    <p class="subtitle">Intersezione delle tracce con gli stave nel piano trasverso e i chip attivi lungo z. Le sovrapposizioni sono contate correttamente: una traccia che attraversa almeno un chip attivo viene contata una volta sola.</p>
+    <div class="metrics">
+      <div class="metric"><span>Efficienza sul campione</span><strong id="mOverall">—</strong><small>Hit attivi / tutte le tracce generate</small></div>
+      <div class="metric"><span>Efficienza rispetto al cilindro ideale</span><strong id="mIdeal">—</strong><small>Hit attivi tra le tracce nel cilindro ideale</small></div>
+      <div class="metric"><span>Solo zone inattive</span><strong id="mDead">—</strong><small>Tracce su uno stave ma senza hit attivo</small></div>
+      <div class="metric"><span>Chip complessivi</span><strong id="mChips">—</strong><small id="mCounts">Configurazione corrente</small></div>
+    </div>
+    <div class="plots">
+      <section class="panel"><h2>Geometria degli stave · proiezione XY</h2><div class="plot" id="xy"></div></section>
+      <section class="panel"><h2>Probabilità di hit vs φ</h2><div class="plot" id="phi"></div></section>
+      <section class="panel"><h2>Probabilità di hit vs η</h2><div class="plot" id="eta"></div></section>
+      <section class="panel"><h2>Mappa efficienza · η × φ</h2><div class="plot heat" id="heatmap"></div></section>
+      <section class="panel wide"><h2>Zoom su un modulo · chip e bordi inattivi (coordinate locali)</h2><div class="plot heat" id="module"></div></section>
+    </div>
+    <section class="panel results" id="results" style="display:none">
+      <div class="results-header"><div><div class="mark">Design space exploration</div><h2 style="margin:6px 0">Configurazioni migliori</h2></div><button class="secondary" onclick="downloadCSV()">Esporta CSV</button></div>
+      <p class="muted">La ricerca usa lo stesso campione di tracce per ogni candidato. Dopo aver applicato una configurazione, riesegue una simulazione più dettagliata.</p>
+      <div class="plot short" id="scatter"></div>
+      <div class="table-wrap"><table><thead><tr><th>#</th><th>r [cm]</th><th>Stave</th><th>Tilt [°]</th><th>Eff. [%]</th><th>Score [pp]</th><th></th></tr></thead><tbody id="table"></tbody></table></div>
+    </section>
+    <div class="method"><strong>Perimetro del modello:</strong> ottimizza la copertura geometrica di un singolo layer iTOF, non l'efficienza di ricostruzione delle tracce. Il cilindro ideale di riferimento ha raggio r, lunghezza L e copertura azimutale completa. Il modello usa chip con bordi passivi simmetrici per lato. Non include materiali, scattering, B-field, timing, sensor response o matching TRK↔iTOF. Le dimensioni base (r=21 cm, 24 stave, 5,42 cm, 129 cm, tilt 3° e chip 2×4 per modulo) riprendono la geometria segmentata di AliceO2; i bordi passivi sono configurabili come proprietà fisse del sensore, non sono variabili di ottimizzazione.</div>
+  </main>
+</div>
+<script>
+const designSpec = [
+ ['radius_cm','Raggio [cm]',21,0.1],['n_staves','Numero stave',24,1],['tilt_deg','Tilt angle [°]',3,0.1]
+];
+const sensorSpec = [
+ ['stave_width_cm','Larghezza stave [cm]',5.42,0.01],['stave_length_cm','Lunghezza stave [cm]',129,0.1],
+ ['phi_offset_deg','φ offset [°]',0,0.1],['chips_across','Chip lungo X',2,1],
+ ['modules_z','Moduli lungo Z',10,1],['chips_per_module_z','Chip / modulo lungo Z',4,1],
+ ['dead_x_mm','Bordo morto X [mm/lato]',0,0.05],['dead_z_mm','Bordo morto Z [mm/lato]',0,0.05]
+];
+const gSpec = [...designSpec,...sensorSpec];
+const tSpec = [['n_tracks','Tracce per simulazione',15000,1000],['eta_max','|η| massimo',2,0.1],['vertex_sigma_z_cm','σ vertice Z [cm]',0,0.1],['seed','Random seed',12345,1]];
+const oSpec = [['n_candidates','Configurazioni da valutare',80,1],['n_tracks_opt','Tracce per candidato',4000,500],['stave_penalty_pp','Penalità / stave [pp]',0.1,0.01],['radius_penalty_pp','Penalità / cm [pp]',0,0.01],['target_radius_cm','Raggio preferito [cm]',21,0.1]];
+const bSpec = [['radius_cm','Raggio [cm]',18,25,0.1],['n_staves','Numero stave',20,32,1],['tilt_deg','Tilt angle [°]',-5,15,0.5]];
+const theme = {paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{family:'system-ui, sans-serif',color:'#aabbd0',size:12},margin:{l:55,r:15,t:14,b:45},xaxis:{gridcolor:'#2e394e',zerolinecolor:'#2e394e'},yaxis:{gridcolor:'#2e394e',zerolinecolor:'#2e394e'}};
+let candidates=[];
+function fieldHTML([key,label,value,step], prefix) {return `<div class="field"><label for="${prefix}${key}">${label}</label><input id="${prefix}${key}" type="number" value="${value}" step="${step}"/></div>`;}
+document.getElementById('geomFields').innerHTML = designSpec.map(s=>fieldHTML(s,'g_')).join('');
+document.getElementById('sensorFields').innerHTML = sensorSpec.map(s=>fieldHTML(s,'g_')).join('');
+document.getElementById('trackFields').innerHTML = tSpec.map(s=>fieldHTML(s,'t_')).join('');
+document.getElementById('optimizationFields').innerHTML = oSpec.map(s=>fieldHTML(s,'o_')).join('');
+document.getElementById('boundFields').innerHTML = bSpec.map(([key,label,lo,hi,step])=>`<div class="bound"><div class="label">${label}</div><input aria-label="${label} minimo" id="b_${key}_min" type="number" step="${step}" value="${lo}"/><input aria-label="${label} massimo" id="b_${key}_max" type="number" step="${step}" value="${hi}"/></div>`).join('');
+function read(prefix,spec) {const out={}; for(const [k] of spec) {let x=Number(document.getElementById(prefix+k).value);if(!Number.isFinite(x))throw Error(`Parametro ${k} non valido`);out[k]=x;}return out;}
+function payload(){return {geometry:read('g_',gSpec),...read('t_',tSpec)};}
+function pct(x){return x===null||x===undefined?'—':(100*x).toFixed(2)+'%';}
+function status(s,bad=false){let el=document.getElementById('status');el.textContent=s;el.className='status'+(bad?' bad':'');}
+function busy(on){document.getElementById('run').disabled=on;document.getElementById('opt').disabled=on;}
+async function callApi(url, p){let resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});let result=await resp.json();if(!resp.ok)throw Error(result.error||'Errore nella richiesta');return result;}
+function plot(id,data,opts={}){let layout={...theme,...opts,xaxis:{...theme.xaxis,...(opts.xaxis||{})},yaxis:{...theme.yaxis,...(opts.yaxis||{})}};Plotly.react(id,data,layout,{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']});}
+function showSimulation(result){
+ const m=result.metrics,p=result.plots;
+ document.getElementById('mOverall').textContent=pct(m.eff_all);
+ document.getElementById('mIdeal').textContent=pct(m.eff_reference);
+ document.getElementById('mDead').textContent=pct(m.dead_only_fraction);
+ document.getElementById('mChips').textContent=m.n_chips.toLocaleString('it-IT');
+ document.getElementById('mCounts').textContent=`${m.n_active}/${m.n_tracks} tracce attive · area sensibile ${m.active_sensor_area_cm2.toFixed(0)} cm²`;
+ plot('xy',[
+  {x:p.geometry.circle_x,y:p.geometry.circle_y,mode:'lines',name:'Raggio centrale',line:{color:'#54657d',dash:'dot',width:1}},
+  {x:p.geometry.staves_x,y:p.geometry.staves_y,mode:'lines',name:'Stave fisico',line:{color:'#f6b96f',width:6}},
+  {x:p.geometry.active_x,y:p.geometry.active_y,mode:'lines',name:'Bande attive X',line:{color:'#62d3cb',width:4}}],
+  {xaxis:{title:'X [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'Y [cm]'},legend:{orientation:'h',y:-0.2},margin:{l:48,r:15,t:10,b:70}});
+ plot('phi',[{x:p.phi.x,y:p.phi.y,mode:'lines',name:'Hit',line:{color:'#62d3cb',width:2.5}}],{xaxis:{title:'φ [°]',range:[0,360]},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
+ plot('eta',[{x:p.eta.x,y:p.eta.y,mode:'lines',name:'Hit',line:{color:'#f6b96f',width:2.5}}],{xaxis:{title:'η'},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
+ plot('heatmap',[{type:'heatmap',x:p.heatmap.x,y:p.heatmap.y,z:p.heatmap.z,zmin:0,zmax:1,colorscale:[[0,'#1a2b45'],[0.5,'#2d7e92'],[1,'#69dfc8']],colorbar:{title:'Eff.'},hovertemplate:'φ %{x:.1f}°<br>η %{y:.2f}<br>Eff. %{z:.1%}<extra></extra>'}],{xaxis:{title:'φ [°]'},yaxis:{title:'η'}});
+ const rect=(bounds)=>{const [x0,y0,x1,y1]=bounds;return {x:[x0,x1,x1,x0,x0],y:[y0,y0,y1,y1,y0]};};
+ const modules=[];
+ p.module.chips.forEach((chip,i)=>{let b=rect(chip.outer),a=rect(chip.active);
+  modules.push({x:b.x,y:b.y,mode:'lines',type:'scatter',showlegend:false,line:{color:'#f6b96f',width:2},hoverinfo:'skip'});
+  modules.push({x:a.x,y:a.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(98,211,203,0.35)',showlegend:false,line:{color:'#62d3cb',width:1},name:`Chip ${i+1}`,hovertemplate:'Area attiva<extra></extra>'});
+ });
+ plot('module',modules,{xaxis:{title:'u locale [cm]'},yaxis:{title:'z locale [cm]',scaleanchor:'x',scaleratio:1},margin:{l:60,r:10,t:10,b:55}});
+}
+async function simulate(){busy(true);status('Calcolo della copertura geometrica…');try{let data=await callApi('/api/simulate',payload());showSimulation(data);status('Simulazione completata.');}catch(e){status(e.message,true);}finally{busy(false);}}
+async function runOptimization(){busy(true);status('Valutazione delle configurazioni candidate…');try{
+ const p=payload(),bounds={}; for(const [key] of bSpec) bounds[key]=[Number(document.getElementById(`b_${key}_min`).value),Number(document.getElementById(`b_${key}_max`).value)];
+ p.optimization={...read('o_',oSpec),bounds};p.n_tracks_opt=p.optimization.n_tracks_opt;
+ const result=await callApi('/api/optimize',p);candidates=result.candidates;showCandidates();status(`${candidates.length} configurazioni valutate. Clicca «Usa» per applicarne una.`);
+ }catch(e){status(e.message,true);}finally{busy(false);}}
+function showCandidates(){
+ document.getElementById('results').style.display='block';
+ plot('scatter',[{x:candidates.map(c=>c.n_staves),y:candidates.map(c=>100*c.eff_all),mode:'markers',type:'scatter',
+ marker:{color:candidates.map(c=>c.score_pp),colorscale:'Viridis',size:10,colorbar:{title:'Score'}},
+ text:candidates.map(c=>`r=${c.radius_cm.toFixed(2)} cm<br>tilt=${c.tilt_deg.toFixed(2)}°`),hovertemplate:'N stave %{x}<br>Eff. %{y:.2f}%<br>%{text}<extra></extra>'}],
+ {xaxis:{title:'Numero di stave',dtick:1},yaxis:{title:'Efficienza globale [%]',range:[0,101]},margin:{l:55,r:20,t:15,b:55}});
+ document.getElementById('table').innerHTML=candidates.slice(0,20).map((c,i)=>`<tr><td>${i+1}</td><td>${c.radius_cm.toFixed(2)}</td><td>${c.n_staves}</td><td>${c.tilt_deg.toFixed(2)}</td><td>${(100*c.eff_all).toFixed(2)}</td><td>${c.score_pp.toFixed(2)}</td><td><button class="use" onclick="applyCandidate(${i})">Usa</button></td></tr>`).join('');
+}
+function applyCandidate(i){const c=candidates[i];for(const k of ['radius_cm','n_staves','tilt_deg'])document.getElementById('g_'+k).value=c[k];window.scrollTo({top:0,behavior:'smooth'});simulate();}
+function downloadBlob(filename,text,type){let a=document.createElement('a'),u=URL.createObjectURL(new Blob([text],{type}));a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),300);}
+function downloadCSV(){if(!candidates.length)return;const keys=Object.keys(candidates[0]);downloadBlob('itof_optimization.csv',[keys.join(','),...candidates.map(c=>keys.map(k=>c[k]===null?'':c[k]).join(','))].join('\n'),'text/csv');}
+function saveConfig(){let p=payload();downloadBlob('itof_config.json',JSON.stringify(p,null,2),'application/json');}
+async function loadConfig(event){
+ try {const file=event.target.files[0];if(!file)return;const p=JSON.parse(await file.text());
+  for(const [k] of gSpec)if(p.geometry&&p.geometry[k]!==undefined)document.getElementById('g_'+k).value=p.geometry[k];
+  for(const [k] of tSpec)if(p[k]!==undefined)document.getElementById('t_'+k).value=p[k];
+  simulate();
+ }catch(e){status('Errore nella lettura del JSON: '+e.message,true);}finally{event.target.value='';}
+}
+function resetConfig(){for(const [k,,v] of gSpec)document.getElementById('g_'+k).value=v;for(const [k,,v] of tSpec)document.getElementById('t_'+k).value=v;simulate();}
+simulate();
+</script>
+</body>
+</html>

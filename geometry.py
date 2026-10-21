@@ -23,7 +23,9 @@ class Geometry:
     # Chip orientation: 26 mm across the stave (u), 30 mm along the beam (z).
     chip_width_cm: float = 2.6
     chip_length_cm: float = 3.0
-    # One asymmetric end-of-column band, along the 26 mm edge at +z.
+    # End-of-column band, along the 30 mm (long, z-parallel) chip edge. It sits on
+    # the OUTER edge of the module: low-u edge for the chips in the low-u half of
+    # the module, high-u edge for the others (see eoc_side_low).
     eoc_width_mm: float = 2.0
     # Optional mechanical gaps. Zero until measured dimensions are supplied.
     chip_gap_u_mm: float = 0.0
@@ -61,10 +63,11 @@ class Geometry:
         if any(v < 0 for v in (self.dead_x_mm, self.dead_z_mm, self.eoc_width_mm,
                               self.chip_gap_u_mm, self.chip_gap_z_mm, self.module_gap_z_mm)):
             raise ValueError('Bordi inattivi e distanze tra chip/moduli devono essere >= 0.')
-        if 2 * self.dead_x_mm >= 10 * self.chip_width_cm:
-            raise ValueError('Margine morto X troppo grande rispetto al chip.')
-        if self.eoc_width_mm + 2 * self.dead_z_mm >= 10 * self.chip_length_cm:
-            raise ValueError('End-of-column + margini Z troppo grandi rispetto al chip.')
+        # EOC now runs along z on one transverse (u) side of each chip.
+        if self.eoc_width_mm + 2 * self.dead_x_mm >= 10 * self.chip_width_cm:
+            raise ValueError('End-of-column + margini X troppo grandi rispetto al chip.')
+        if 2 * self.dead_z_mm >= 10 * self.chip_length_cm:
+            raise ValueError('Margine morto Z troppo grande rispetto al chip.')
         lay = chip_layout(self)
         if lay['span_u'] > self.stave_width_cm + 1.e-9:
             raise ValueError('Il numero di chip con le dimensioni/gap indicati supera la larghezza dello stave.')
@@ -90,6 +93,17 @@ class StaveClearanceError(ValueError):
             f"{report['required_clearance_mm']:.3f} mm. "
             f"Coppie non conformi: {report['n_violating_pairs']}."
         )
+
+
+def eoc_side_low(chips_across, col):
+    """True if the chip in column `col` has its EOC on the low-u module edge.
+
+    The EOC is always on the outer edge of the module. For chips_across == 2:
+    column 0 -> low-u edge, column 1 -> high-u edge. For an odd number of columns
+    the central column is (arbitrarily) assigned to the low-u side.
+    Works on scalars and numpy arrays.
+    """
+    return 2 * col <= chips_across - 1
 
 
 def stave_frames(g: Geometry):
@@ -179,7 +193,8 @@ def chip_layout(g: Geometry):
     """Fixed-chip tiling, centered inside a larger mechanical stave envelope.
 
     Local u: transverse chip edge 26 mm; local z: chip edge 30 mm.
-    EOC occupies the last eoc_width_mm in +z on *each* chip.
+    EOC occupies eoc_width_mm along the long (z-parallel) chip edge, on the
+    outer u edge of the module (see eoc_side_low).
     """
     du = g.chip_gap_u_mm / 10.0
     dz = g.chip_gap_z_mm / 10.0
@@ -220,7 +235,8 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
     """Straight-line intersections with finite staves and independently sized chips.
 
     Each chip has 26 mm transverse width, 30 mm longitudinal length by default.
-    Its 2 mm end-of-column is a *single* inactive strip at its +z end.
+    Its 2 mm end-of-column is a *single* inactive strip along the long (z) chip
+    edge, on the outer u edge of the module.
     Overlapping staves recover hits (logical OR). Mechanical margins and optional
     inter-chip/module gaps remain insensitive, rather than stretching chip sizes.
     """
@@ -272,10 +288,16 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
                   (local_z >= 0) & (local_z < g.chip_length_cm))
         on_chip = inside & chip_u & chip_z
         sensor |= on_chip
-        is_eoc = on_chip & (local_z >= g.chip_length_cm - eoc)
+
+        # EOC on the outer long edge of the module: low-u edge for the low-u
+        # columns, high-u edge for the others.
+        eoc_low = eoc_side_low(g.chips_across, col)
+        is_eoc = on_chip & np.where(eoc_low, local_u < eoc, local_u >= g.chip_width_cm - eoc)
         eoc_only |= is_eoc
-        hit = (on_chip & (local_u >= dead_u) & (local_u < g.chip_width_cm - dead_u) &
-               (local_z >= dead_z) & (local_z < g.chip_length_cm - eoc - dead_z))
+        u_lo = dead_u + np.where(eoc_low, eoc, 0.0)
+        u_hi = g.chip_width_cm - dead_u - np.where(eoc_low, 0.0, eoc)
+        hit = (on_chip & (local_u >= u_lo) & (local_u < u_hi) &
+               (local_z >= dead_z) & (local_z < g.chip_length_cm - dead_z))
         active |= hit
         if np.all(active):
             break
@@ -284,8 +306,8 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
     reference = np.abs(z0 + g.radius_cm * sinheta) <= g.stave_length_cm / 2
     nref = int(np.count_nonzero(reference))
     nactive = int(np.count_nonzero(active))
-    active_chip_width = g.chip_width_cm - 2 * dead_u
-    active_chip_length = g.chip_length_cm - eoc - 2 * dead_z
+    active_chip_width = g.chip_width_cm - eoc - 2 * dead_u
+    active_chip_length = g.chip_length_cm - 2 * dead_z
     n_chips = g.n_staves * g.chips_across * g.chips_z
     metrics = {
         'eff_all': nactive / n,
@@ -346,13 +368,16 @@ def geometry_plot(g: Geometry):
     base_x, base_y, active_x, active_y = [], [], [], []
     centers, axes_u, _ = stave_frames(g)
     dead_u = g.dead_x_mm / 10
+    eoc = g.eoc_width_mm / 10
     for center, axis_u in zip(centers, axes_u):
         a, b = (center + axis_u * (j * g.stave_width_cm / 2) for j in (-1, 1))
         base_x.extend([a[0], b[0], None])
         base_y.extend([a[1], b[1], None])
         for ch in range(g.chips_across):
-            low = -lay['span_u'] / 2 + ch * lay['step_u'] + dead_u
-            high = -lay['span_u'] / 2 + ch * lay['step_u'] + g.chip_width_cm - dead_u
+            ulo = -lay['span_u'] / 2 + ch * lay['step_u']
+            low_side = bool(eoc_side_low(g.chips_across, ch))
+            low = ulo + dead_u + (eoc if low_side else 0.0)
+            high = ulo + g.chip_width_cm - dead_u - (0.0 if low_side else eoc)
             a, b = center + axis_u * low, center + axis_u * high
             active_x.extend([a[0], b[0], None])
             active_y.extend([a[1], b[1], None])
@@ -371,7 +396,7 @@ def geometry_plot(g: Geometry):
 
 
 def module_plot(g: Geometry):
-    """One 2D module showing chips, single-sided EOC bands, and optional gaps."""
+    """One 2D module showing chips, EOC bands on the outer long edges, and optional gaps."""
     g.validate(check_clearance=False)
     lay = chip_layout(g)
     dz0 = g.dead_z_mm / 10
@@ -379,18 +404,22 @@ def module_plot(g: Geometry):
     eoc = g.eoc_width_mm / 10
     chips = []
     for i in range(g.chips_across):
+        low_side = bool(eoc_side_low(g.chips_across, i))
         for j in range(g.chips_per_module_z):
             ulo = -lay['span_u'] / 2 + i * lay['step_u']
             zlo = -lay['module_length'] / 2 + j * lay['step_z']
+            uhi = ulo + g.chip_width_cm
+            zhi = zlo + g.chip_length_cm
             chips.append({
-                'outer': [ulo, zlo, ulo + g.chip_width_cm, zlo + g.chip_length_cm],
-                'active': [ulo + du0, zlo + dz0, ulo + g.chip_width_cm - du0,
-                           zlo + g.chip_length_cm - eoc - dz0],
-                'eoc': [ulo, zlo + g.chip_length_cm - eoc,
-                        ulo + g.chip_width_cm, zlo + g.chip_length_cm],
+                'outer': [ulo, zlo, uhi, zhi],
+                'active': [ulo + du0 + (eoc if low_side else 0.0), zlo + dz0,
+                           uhi - du0 - (0.0 if low_side else eoc), zhi - dz0],
+                'eoc': ([ulo, zlo, ulo + eoc, zhi] if low_side
+                        else [uhi - eoc, zlo, uhi, zhi]),
+                'eoc_side': 'low_u' if low_side else 'high_u',
             })
-    active_u = g.chip_width_cm - 2 * du0
-    active_z = g.chip_length_cm - eoc - 2 * dz0
+    active_u = g.chip_width_cm - eoc - 2 * du0
+    active_z = g.chip_length_cm - 2 * dz0
     return {'chips': chips, 'width': lay['span_u'], 'length': lay['module_length'],
             'span_u_cm': lay['span_u'], 'module_length_cm': lay['module_length'],
             'stave_width_cm': g.stave_width_cm, 'stave_length_cm': g.stave_length_cm,
@@ -436,7 +465,7 @@ def sample_track_pair(g: Geometry, eta_max=2.0, sigma_z_cm=0.0, seed=None):
             elif not mask['sensor'][k]:
                 reason = 'Gap o bordo meccanico tra i chip'
             elif mask['eoc_only'][k]:
-                reason = 'Area inattiva del sensore (inclusa EOC)'
+                reason = 'End-of-column (bordo lungo esterno del modulo)'
             else:
                 reason = 'Margine inattivo del chip'
             return {'efficient': bool(hit), 'phi_deg': float(np.rad2deg(phi)),

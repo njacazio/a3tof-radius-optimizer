@@ -76,3 +76,40 @@ def test_optimizer_does_not_allow_scanning_stave_clearance():
         'optimization': {'bounds': {'stave_clearance_mm': [0, 2]}}
     })
     assert response.status_code == 400
+
+
+def test_preview_updates_module_dimensions_and_tilt_center():
+    client = app.test_client()
+    response = client.post('/api/preview', json={'geometry': {
+        'chip_gap_u_mm': 1.0, 'chip_gap_z_mm': 0.5,
+        'module_gap_z_mm': 1.0, 'tilt_deg': 10.0}})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['module']['span_u_cm'] == pytest.approx(5.3)
+    assert data['module']['module_length_cm'] == pytest.approx(12.15)
+    assert len(data['geometry']['center_x']) == 24
+    assert data['clearance']['required_clearance_mm'] == 1.0
+
+
+def test_preview_draws_invalid_stave_clearance_without_simulating():
+    client = app.test_client()
+    response = client.post('/api/preview', json={'geometry': {'n_staves': 27, 'tilt_deg': 0}})
+    assert response.status_code == 200
+    assert not response.get_json()['clearance']['valid']
+
+
+def test_pair_api_returns_a_new_hit_and_miss():
+    client = app.test_client()
+    response = client.post('/api/sample-tracks', json={'sample_seed': 31})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['hit']['efficient'] is True
+    assert data['miss']['efficient'] is False
+    assert client.post('/api/sample-tracks', json={'sample_seed': 31}).get_json() == data
+    assert client.post('/api/sample-tracks', json={'sample_seed': 32}).get_json() != data
+
+
+def test_pair_api_rejects_invalid_clearance():
+    client = app.test_client()
+    response = client.post('/api/sample-tracks', json={'geometry': {'n_staves': 27, 'tilt_deg': 0}})
+    assert response.status_code == 400

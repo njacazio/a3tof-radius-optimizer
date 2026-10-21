@@ -50,6 +50,11 @@
     th,td { border-bottom:1px solid var(--line); padding:11px 10px; text-align:right; }
     th { font-size:12px; color:var(--muted); font-weight:600; } th:first-child,td:first-child { text-align:left; }
     tr:hover td { background:#202d42; } .use { padding:6px 12px; }
+    .derived { margin:12px 0 6px; padding:12px; background:#182b3e; border:1px solid #37546c; border-radius:8px; font-size:13px; color:#d6e9f2; }
+    .derived strong { color:var(--accent); }
+    .track-last { font-size:12px; color:var(--muted); margin-top:10px; }
+    .track-last span { color:#a8f1b9; }
+    .track-last em { color:#f9a1a1; font-style:normal; }
     .method { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; color:#aebbd0; font-size:13px; }
     .method strong { color:var(--text); }
     @media(max-width:1150px) { .metrics { grid-template-columns:repeat(2,1fr); } }
@@ -64,12 +69,13 @@
     <h1>Geometry Lab</h1>
     <p class="muted">Editor della geometria, simulazione veloce e ricerca di configurazioni ottimali.</p>
     <section class="group"><h2>01 · Variabili di progetto</h2><div id="geomFields"></div>
-      <p class="hint">Solo raggio, numero di stave e tilt angle vengono variati durante la ricerca. Le configurazioni con stave troppo vicini o intersecanti sono scartate.</p>
+      <p class="hint">Il tilt ruota ciascuno stave <strong>attorno al suo centro</strong> posto sul raggio R; 0° = stave tangente al cerchio. Durante la ricerca variano solo R, numero di stave e tilt. Le geometrie con stave troppo vicini sono scartate.</p>
     </section>
     <section class="group"><h2>02 · Sensori e altri parametri fissi</h2><div id="sensorFields"></div>
       <p class="hint"><strong>Vincolo meccanico:</strong> la distanza minima fra tutti gli stave deve essere ≥ 1 mm (modificabile). Lo spessore degli stave è inizialmente 0 mm nel modello idealizzato: impostare lo spessore fisico per un controllo conservativo degli ingombri reali. Sono controllate tutte le coppie, anche non adiacenti.</p>
       <p class="hint">Chip nominale: <strong>26 mm trasversi (u) × 30 mm lungo z</strong>. La <strong>end-of-column (2 mm)</strong> è una sola fascia inattiva sul bordo a +z, lungo il lato da 26 mm. Tutti questi parametri sono <strong>fissi durante l'ottimizzazione</strong>. I margini morti aggiuntivi X/Z, se presenti, sono espressi in mm per lato; gap chip/modulo preimpostati a zero perché non ancora specificati.</p>
     </section>
+      <div id="moduleDimensions" class="derived" aria-live="polite">Dimensioni modulo: calcolo…</div>
     <section class="group"><h2>03 · Tracce generate</h2><div id="trackFields"></div>
       <p class="hint">Generazione uniforme in φ ed η, con vertice (x,y) = (0,0). Propagazione rettilinea; nessuna deflessione magnetica.</p>
     </section>
@@ -98,11 +104,16 @@
     </div>
     <div class="constraint-banner" id="constraintBanner" aria-live="polite"></div>
     <div class="plots">
-      <section class="panel"><h2>Geometria degli stave · proiezione XY</h2><div class="plot" id="xy"></div></section>
+      <section class="panel"><h2>Geometria degli stave e tracce · proiezione XY</h2>
+        <div class="buttons"><button id="addTracks" onclick="addRandomTracks()">+ Traccia efficiente e inefficiente</button><button class="secondary" onclick="clearTracks()">Rimuovi tracce</button></div>
+        <p class="hint">Ogni click aggiunge <strong>due</strong> tracce diverse: verde = hit attivo; rosso = nessun hit attivo. La selezione usa η e z, mentre il disegno è la proiezione XY. Le tracce precedenti rimangono visibili. I punti terminali identificano la direzione della traccia, <strong>non</strong> la posizione dell’hit.</p>
+        <div id="trackCount" class="hint" aria-live="polite">0 coppie disegnate</div>
+        <div id="lastTracks" class="track-last" aria-live="polite"></div>
+        <div class="plot" id="xy"></div></section>
       <section class="panel"><h2>Probabilità di hit vs φ</h2><div class="plot" id="phi"></div></section>
       <section class="panel"><h2>Probabilità di hit vs η</h2><div class="plot" id="eta"></div></section>
       <section class="panel"><h2>Mappa efficienza · η × φ</h2><div class="plot heat" id="heatmap"></div></section>
-      <section class="panel wide"><h2>Zoom su un modulo · chip, aree attive ed end-of-column (coordinate locali)</h2><p class="hint">Verde = area attiva; arancione = fascia end-of-column; contorni = chip fisici. Gli spazi esterni sono regioni meccaniche inattive.</p><div class="plot heat" id="module"></div></section>
+      <section class="panel wide"><h2>Zoom su un modulo · chip, aree attive ed end-of-column (coordinate locali)</h2><p class="hint">Verde = area attiva; arancione = fascia end-of-column; contorni = chip fisici. Gli spazi esterni sono regioni meccaniche inattive.</p><div class="derived" id="modulePlotDimensions" aria-live="polite">Dimensioni del modulo…</div><div class="plot heat" id="module"></div></section>
     </div>
     <section class="panel results" id="results" style="display:none">
       <div class="results-header"><div><div class="mark">Design space exploration</div><h2 style="margin:6px 0">Configurazioni migliori</h2></div><button class="secondary" onclick="downloadCSV()">Esporta CSV</button></div>
@@ -134,13 +145,17 @@ const oSpec = [['n_candidates','Configurazioni da valutare',80,1],['n_tracks_opt
 const bSpec = [['radius_cm','Raggio [cm]',18,25,0.1],['n_staves','Numero stave',20,32,1],['tilt_deg','Tilt angle [°]',-5,15,0.5]];
 const theme = {paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{family:'system-ui, sans-serif',color:'#aabbd0',size:12},margin:{l:55,r:15,t:14,b:45},xaxis:{gridcolor:'#2e394e',zerolinecolor:'#2e394e'},yaxis:{gridcolor:'#2e394e',zerolinecolor:'#2e394e'}};
 let candidates=[];
+let trackPairs=[];
+let displayedGeometry=null;
+let previewRequest=0;
+let previewTimer=null;
 function fieldHTML([key,label,value,step], prefix) {return `<div class="field"><label for="${prefix}${key}">${label}</label><input id="${prefix}${key}" type="number" value="${value}" step="${step}"/></div>`;}
 document.getElementById('geomFields').innerHTML = designSpec.map(s=>fieldHTML(s,'g_')).join('');
 document.getElementById('sensorFields').innerHTML = sensorSpec.map(s=>fieldHTML(s,'g_')).join('');
 document.getElementById('trackFields').innerHTML = tSpec.map(s=>fieldHTML(s,'t_')).join('');
 document.getElementById('optimizationFields').innerHTML = oSpec.map(s=>fieldHTML(s,'o_')).join('');
 document.getElementById('boundFields').innerHTML = bSpec.map(([key,label,lo,hi,step])=>`<div class="bound"><div class="label">${label}</div><input aria-label="${label} minimo" id="b_${key}_min" type="number" step="${step}" value="${lo}"/><input aria-label="${label} massimo" id="b_${key}_max" type="number" step="${step}" value="${hi}"/></div>`).join('');
-function read(prefix,spec) {const out={}; for(const [k] of spec) {let x=Number(document.getElementById(prefix+k).value);if(!Number.isFinite(x))throw Error(`Parametro ${k} non valido`);out[k]=x;}return out;}
+function read(prefix,spec) {const out={}; for(const [k] of spec) {const el=document.getElementById(prefix+k);if(el.value.trim()==='')throw Error(`Parametro ${k} mancante`);let x=Number(el.value);if(!Number.isFinite(x))throw Error(`Parametro ${k} non valido`);out[k]=x;}return out;}
 function payload(){return {geometry:read('g_',gSpec),...read('t_',tSpec)};}
 function pct(x){return x===null||x===undefined?'—':(100*x).toFixed(2)+'%';}
 function status(s,bad=false){let el=document.getElementById('status');el.textContent=s;el.className='status'+(bad?' bad':'');}
@@ -158,19 +173,83 @@ function showClearance(c){
    `✕ Geometria non ammessa: ${c.n_violating_pairs} coppie non conformi. Le stave coinvolte sono evidenziate in rosso; non viene calcolata l'efficienza.`;
 }
 function showXY(g){
+ displayedGeometry=g;
  const traces=[
-  {x:g.circle_x,y:g.circle_y,mode:'lines',name:'Raggio centrale',line:{color:'#54657d',dash:'dot',width:1}},
+  {x:g.circle_x,y:g.circle_y,mode:'lines',name:'Raggio dei centri',line:{color:'#54657d',dash:'dot',width:1}},
   {x:g.staves_x,y:g.staves_y,mode:'lines',name:'Stave fisico',line:{color:'#f6b96f',width:6}},
-  {x:g.active_x,y:g.active_y,mode:'lines',name:'Bande chip (u)',line:{color:'#62d3cb',width:4}}];
+  {x:g.active_x,y:g.active_y,mode:'lines',name:'Bande chip (u)',line:{color:'#62d3cb',width:4}},
+  {x:g.center_x,y:g.center_y,mode:'markers',name:'Centri / pivot del tilt',marker:{color:'#e2e6ff',size:5},hovertemplate:'Centro/pivot stave<extra></extra>'}];
  if(g.invalid_x?.length)traces.push({x:g.invalid_x,y:g.invalid_y,mode:'lines',name:'Stave non conformi',line:{color:'#f98383',width:7}});
+ for(const [kind,color,label] of [['hit','#9df5b1','Traccia efficiente'],['miss','#ff858e','Traccia inefficiente']]){
+   const linesX=[],linesY=[],dotsX=[],dotsY=[],labels=[];
+   trackPairs.forEach((pair,i)=>{
+     const t=pair[kind];
+     linesX.push(0,t.x_end_cm,null);linesY.push(0,t.y_end_cm,null);
+     dotsX.push(t.x_end_cm);dotsY.push(t.y_end_cm);
+     labels.push(`#${i+1} · φ=${t.phi_deg.toFixed(1)}° · η=${t.eta.toFixed(2)} · z₀=${t.z0_cm.toFixed(1)} cm · ${t.reason}`);
+   });
+   if(dotsX.length){
+     traces.push({x:linesX,y:linesY,mode:'lines',type:'scatter',name:label,line:{color,width:2.2},hoverinfo:'skip'});
+     traces.push({x:dotsX,y:dotsY,text:labels,mode:'markers',type:'scatter',showlegend:false,marker:{color,size:7},hovertemplate:'%{text}<extra></extra>'});
+   }
+ }
  plot('xy',traces,{xaxis:{title:'X [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'Y [cm]'},legend:{orientation:'h',y:-0.2},margin:{l:48,r:15,t:10,b:70}});
 }
+function renderTrackCount(){
+ document.getElementById('trackCount').textContent=`${trackPairs.length} coppie · ${2*trackPairs.length} tracce disegnate`;
+ const last=trackPairs.at(-1);
+ document.getElementById('lastTracks').innerHTML=last ?
+  `<span>Hit: φ ${last.hit.phi_deg.toFixed(1)}°, η ${last.hit.eta.toFixed(2)}</span> · <em>Miss: φ ${last.miss.phi_deg.toFixed(1)}°, η ${last.miss.eta.toFixed(2)} — ${last.miss.reason}</em>` : '';
+}
+function clearTracks(){trackPairs=[];renderTrackCount();if(displayedGeometry)showXY(displayedGeometry);}
+async function addRandomTracks(){
+ const button=document.getElementById('addTracks');button.disabled=true;
+ try{
+   // sample_seed deliberately omitted: new random trajectories on every click.
+   const pair=await callApi('/api/sample-tracks',payload());
+   trackPairs.push(pair);renderTrackCount();if(displayedGeometry)showXY(displayedGeometry);
+   status('Aggiunte due tracce (un hit e un miss).');
+ }catch(e){status(e.message,true);}finally{button.disabled=false;}
+}
+function showModule(module){
+ const width=module.span_u_cm, length=module.module_length_cm;
+ const summary=`<strong>Modulo: ${width.toFixed(2)} × ${length.toFixed(2)} cm</strong> (u × z) · Area attiva ${module.active_area_cm2.toFixed(2)} cm² · Impronta lungo z di tutti i moduli ${module.total_modules_length_cm.toFixed(2)} cm`;
+ document.getElementById('moduleDimensions').innerHTML=summary;
+ document.getElementById('modulePlotDimensions').innerHTML=summary+` · Stave meccanico ${module.stave_width_cm.toFixed(2)} × ${module.stave_length_cm.toFixed(2)} cm`;
+ const rect=(bounds)=>{const [x0,y0,x1,y1]=bounds;return {x:[x0,x1,x1,x0,x0],y:[y0,y0,y1,y1,y0]};};
+ const modules=[];
+ module.chips.forEach((chip,i)=>{let b=rect(chip.outer),a=rect(chip.active),e=rect(chip.eoc);
+  modules.push({x:b.x,y:b.y,mode:'lines',type:'scatter',showlegend:false,line:{color:'#d8deed',width:2},hoverinfo:'skip'});
+  modules.push({x:a.x,y:a.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(98,211,203,0.40)',showlegend:i===0,line:{color:'#62d3cb',width:1},name:'Area attiva',hovertemplate:`Chip ${i+1} · area attiva<extra></extra>`});
+  if(module.eoc_width_mm>0)modules.push({x:e.x,y:e.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(246,185,111,0.70)',showlegend:i===0,line:{color:'#f6b96f',width:1},name:'End-of-column',hovertemplate:`Chip ${i+1} · EOC ${module.eoc_width_mm} mm<extra></extra>`});
+ });
+ plot('module',modules,{xaxis:{title:'u locale [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'z locale [cm]'},margin:{l:60,r:10,t:10,b:55}});
+}
+function queuePreview(){
+ clearTracks();
+ for(const id of ['mOverall','mIdeal','mDead','mChips'])document.getElementById(id).textContent='—';
+ for(const id of ['phi','eta','heatmap']){Plotly.purge(id);document.getElementById(id).textContent='Esegui la simulazione per aggiornare le efficienze.';}
+ document.getElementById('mCounts').textContent='Geometria modificata · premi «Simula geometria» per aggiornare le efficienze';
+ if(previewTimer)clearTimeout(previewTimer);
+ const seq=++previewRequest;
+ previewTimer=setTimeout(async()=>{
+  try{
+   const data=await callApi('/api/preview', {geometry:read('g_',gSpec)});
+   if(seq!==previewRequest)return;
+   showClearance(data.clearance);showXY(data.geometry);showModule(data.module);
+   if(!data.clearance.valid)status('Distanza fra stave insufficiente: geometria non valida.',true);
+   else status('Geometria e dimensioni del modulo aggiornate in anteprima; efficienze da ricalcolare.');
+  }catch(e){if(seq===previewRequest){document.getElementById('moduleDimensions').textContent='Configurazione non valida: '+e.message;status(e.message,true);}}
+ },160);
+}
+
 function showInvalidGeometry(details){
  showClearance(details.clearance);
  for(const id of ['mOverall','mIdeal','mDead','mChips'])document.getElementById(id).textContent='—';
  document.getElementById('mCounts').textContent='Geometria rifiutata';
- for(const id of ['phi','eta','heatmap','module']) { Plotly.purge(id);document.getElementById(id).innerHTML=''; }
+ for(const id of ['phi','eta','heatmap']) { Plotly.purge(id);document.getElementById(id).innerHTML=''; }
  showXY(details.geometry);
+ if(details.module)showModule(details.module);
 }
 function showSimulation(result){
  const m=result.metrics,p=result.plots;
@@ -180,20 +259,13 @@ function showSimulation(result){
  document.getElementById('mChips').textContent=m.n_chips.toLocaleString('it-IT');
  document.getElementById('mCounts').textContent=`${m.n_active}/${m.n_tracks} tracce attive · frazione attiva/chip ${pct(m.active_chip_area_fraction)} · area sensibile ${m.active_sensor_area_cm2.toFixed(0)} cm²`;
  showClearance(m.stave_clearance);
- showXY(p.geometry);
+ showXY(p.geometry);showModule(p.module);
  plot('phi',[{x:p.phi.x,y:p.phi.y,mode:'lines',name:'Hit',line:{color:'#62d3cb',width:2.5}}],{xaxis:{title:'φ [°]',range:[0,360]},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('eta',[{x:p.eta.x,y:p.eta.y,mode:'lines',name:'Hit',line:{color:'#f6b96f',width:2.5}}],{xaxis:{title:'η'},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('heatmap',[{type:'heatmap',x:p.heatmap.x,y:p.heatmap.y,z:p.heatmap.z,zmin:0,zmax:1,colorscale:[[0,'#1a2b45'],[0.5,'#2d7e92'],[1,'#69dfc8']],colorbar:{title:'Eff.'},hovertemplate:'φ %{x:.1f}°<br>η %{y:.2f}<br>Eff. %{z:.1%}<extra></extra>'}],{xaxis:{title:'φ [°]'},yaxis:{title:'η'}});
- const rect=(bounds)=>{const [x0,y0,x1,y1]=bounds;return {x:[x0,x1,x1,x0,x0],y:[y0,y0,y1,y1,y0]};};
- const modules=[];
- p.module.chips.forEach((chip,i)=>{let b=rect(chip.outer),a=rect(chip.active),e=rect(chip.eoc);
-  modules.push({x:b.x,y:b.y,mode:'lines',type:'scatter',showlegend:false,line:{color:'#d8deed',width:2},hoverinfo:'skip'});
-  modules.push({x:a.x,y:a.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(98,211,203,0.40)',showlegend:i===0,line:{color:'#62d3cb',width:1},name:'Area attiva',hovertemplate:`Chip ${i+1} · area attiva<extra></extra>`});
-  if(p.module.eoc_width_mm>0)modules.push({x:e.x,y:e.y,mode:'lines',type:'scatter',fill:'toself',fillcolor:'rgba(246,185,111,0.70)',showlegend:i===0,line:{color:'#f6b96f',width:1},name:'End-of-column',hovertemplate:`Chip ${i+1} · EOC ${p.module.eoc_width_mm} mm<extra></extra>`});
- });
- plot('module',modules,{xaxis:{title:'u locale [cm]'},yaxis:{title:'z locale [cm]',scaleanchor:'x',scaleratio:1},margin:{l:60,r:10,t:10,b:55}});
+
 }
-async function simulate(){busy(true);status('Calcolo della copertura geometrica…');try{let data=await callApi('/api/simulate',payload());showSimulation(data);status('Simulazione completata.');}catch(e){if(e.details?.clearance&&e.details?.geometry)showInvalidGeometry(e.details);status(e.message,true);}finally{busy(false);}}
+async function simulate(){previewRequest++;if(previewTimer)clearTimeout(previewTimer);busy(true);status('Calcolo della copertura geometrica…');try{let data=await callApi('/api/simulate',payload());showSimulation(data);status('Simulazione completata.');}catch(e){if(e.details?.clearance&&e.details?.geometry)showInvalidGeometry(e.details);status(e.message,true);}finally{busy(false);}}
 async function runOptimization(){busy(true);status('Valutazione delle configurazioni candidate…');try{
  const p=payload(),bounds={}; for(const [key] of bSpec) bounds[key]=[Number(document.getElementById(`b_${key}_min`).value),Number(document.getElementById(`b_${key}_max`).value)];
  p.optimization={...read('o_',oSpec),bounds};p.n_tracks_opt=p.optimization.n_tracks_opt;
@@ -208,7 +280,7 @@ function showCandidates(){
  {xaxis:{title:'Numero di stave',dtick:1},yaxis:{title:'Efficienza globale [%]',range:[0,101]},margin:{l:55,r:20,t:15,b:55}});
  document.getElementById('table').innerHTML=candidates.slice(0,20).map((c,i)=>`<tr><td>${i+1}</td><td>${c.radius_cm.toFixed(2)}</td><td>${c.n_staves}</td><td>${c.tilt_deg.toFixed(2)}</td><td>${c.min_clearance_mm.toFixed(2)}</td><td>${(100*c.eff_all).toFixed(2)}</td><td>${c.score_pp.toFixed(2)}</td><td><button class="use" onclick="applyCandidate(${i})">Usa</button></td></tr>`).join('');
 }
-function applyCandidate(i){const c=candidates[i];for(const k of ['radius_cm','n_staves','tilt_deg'])document.getElementById('g_'+k).value=c[k];window.scrollTo({top:0,behavior:'smooth'});simulate();}
+function applyCandidate(i){clearTracks();const c=candidates[i];for(const k of ['radius_cm','n_staves','tilt_deg'])document.getElementById('g_'+k).value=c[k];window.scrollTo({top:0,behavior:'smooth'});simulate();}
 function downloadBlob(filename,text,type){let a=document.createElement('a'),u=URL.createObjectURL(new Blob([text],{type}));a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),300);}
 function downloadCSV(){if(!candidates.length)return;const keys=Object.keys(candidates[0]);downloadBlob('itof_optimization.csv',[keys.join(','),...candidates.map(c=>keys.map(k=>c[k]===null?'':c[k]).join(','))].join('\n'),'text/csv');}
 function saveConfig(){let p=payload();downloadBlob('itof_config.json',JSON.stringify(p,null,2),'application/json');}
@@ -216,10 +288,13 @@ async function loadConfig(event){
  try {const file=event.target.files[0];if(!file)return;const p=JSON.parse(await file.text());
   for(const [k] of gSpec)if(p.geometry&&p.geometry[k]!==undefined)document.getElementById('g_'+k).value=p.geometry[k];
   for(const [k] of tSpec)if(p[k]!==undefined)document.getElementById('t_'+k).value=p[k];
-  simulate();
+  clearTracks();simulate();
  }catch(e){status('Errore nella lettura del JSON: '+e.message,true);}finally{event.target.value='';}
 }
-function resetConfig(){for(const [k,,v] of gSpec)document.getElementById('g_'+k).value=v;for(const [k,,v] of tSpec)document.getElementById('t_'+k).value=v;simulate();}
+function resetConfig(){clearTracks();for(const [k,,v] of gSpec)document.getElementById('g_'+k).value=v;for(const [k,,v] of tSpec)document.getElementById('t_'+k).value=v;simulate();}
+// Live refresh of module geometry, stave pivot and clearance while typing.
+for(const [key] of gSpec){document.getElementById('g_'+key).addEventListener('input',queuePreview);}
+for(const key of ['eta_max','vertex_sigma_z_cm'])document.getElementById('t_'+key).addEventListener('input',clearTracks);
 simulate();
 </script>
 </body>

@@ -5,6 +5,7 @@ Straight tracks originate at (0,0,z0), with uniform phi and eta by default.
 This is not a reconstruction, matching or transport efficiency model.
 """
 from dataclasses import dataclass, asdict, replace
+import secrets
 import math
 import numpy as np
 
@@ -91,13 +92,25 @@ class StaveClearanceError(ValueError):
         )
 
 
-def stave_segments(g: Geometry):
-    """2D centerline segments of all mechanical staves, shape (n,2,2), cm."""
+def stave_frames(g: Geometry):
+    """Stave centers and local axes (u, n) in XY, all shape (n_staves, 2).
+
+    Every stave center remains at (R cos(phi_i), R sin(phi_i)) as tilt varies.
+    At tilt=0 the stave's long u axis is tangent to that radius; positive
+    tilt rotates the entire stave counterclockwise *around its own center*.
+    """
     phi = np.deg2rad(g.phi_offset_deg) + np.arange(g.n_staves) * (2 * np.pi / g.n_staves)
     theta = phi + np.deg2rad(g.tilt_deg)
     centers = g.radius_cm * np.column_stack((np.cos(phi), np.sin(phi)))
-    tangent = np.column_stack((-np.sin(theta), np.cos(theta)))
-    half = 0.5 * g.stave_width_cm * tangent
+    axes_u = np.column_stack((-np.sin(theta), np.cos(theta)))
+    normals = np.column_stack((np.cos(theta), np.sin(theta)))
+    return centers, axes_u, normals
+
+
+def stave_segments(g: Geometry):
+    """Stave XY centerline segments (n,2,2); tilt pivot is the stave midpoint."""
+    centers, axes_u, _ = stave_frames(g)
+    half = 0.5 * g.stave_width_cm * axes_u
     return np.stack((centers - half, centers + half), axis=1)
 
 
@@ -294,7 +307,8 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
         'stave_clearance': stave_clearance_report(g),
     }
     if return_masks:
-        return metrics, dict(active=active, physical=physical, sensor=sensor, reference=reference)
+        return metrics, dict(active=active, physical=physical, sensor=sensor,
+                             eoc_only=eoc_only, reference=reference)
     return metrics
 
 
@@ -330,14 +344,9 @@ def geometry_plot(g: Geometry):
     g.validate(check_clearance=False)
     lay = chip_layout(g)
     base_x, base_y, active_x, active_y = [], [], [], []
-    alpha = math.radians(g.tilt_deg)
-    offset = math.radians(g.phi_offset_deg)
+    centers, axes_u, _ = stave_frames(g)
     dead_u = g.dead_x_mm / 10
-    for i in range(g.n_staves):
-        phi = offset + 2 * math.pi * i / g.n_staves
-        theta = phi + alpha
-        center = np.array([g.radius_cm * math.cos(phi), g.radius_cm * math.sin(phi)])
-        axis_u = np.array([-math.sin(theta), math.cos(theta)])
+    for center, axis_u in zip(centers, axes_u):
         a, b = (center + axis_u * (j * g.stave_width_cm / 2) for j in (-1, 1))
         base_x.extend([a[0], b[0], None])
         base_y.extend([a[1], b[1], None])
@@ -355,6 +364,7 @@ def geometry_plot(g: Geometry):
         bad_x.extend([float(aa[0]), float(bb[0]), None])
         bad_y.extend([float(aa[1]), float(bb[1]), None])
     return {'staves_x': base_x, 'staves_y': base_y, 'active_x': active_x, 'active_y': active_y,
+            'center_x': centers[:, 0].tolist(), 'center_y': centers[:, 1].tolist(),
             'invalid_x': bad_x, 'invalid_y': bad_y,
             'circle_x': (g.radius_cm * np.cos(np.linspace(0, 2 * np.pi, 361))).tolist(),
             'circle_y': (g.radius_cm * np.sin(np.linspace(0, 2 * np.pi, 361))).tolist()}
@@ -362,7 +372,7 @@ def geometry_plot(g: Geometry):
 
 def module_plot(g: Geometry):
     """One 2D module showing chips, single-sided EOC bands, and optional gaps."""
-    g.validate()
+    g.validate(check_clearance=False)
     lay = chip_layout(g)
     dz0 = g.dead_z_mm / 10
     du0 = g.dead_x_mm / 10
@@ -379,8 +389,69 @@ def module_plot(g: Geometry):
                 'eoc': [ulo, zlo + g.chip_length_cm - eoc,
                         ulo + g.chip_width_cm, zlo + g.chip_length_cm],
             })
-    return {'chips': chips, 'width': g.stave_width_cm, 'length': lay['module_length'],
+    active_u = g.chip_width_cm - 2 * du0
+    active_z = g.chip_length_cm - eoc - 2 * dz0
+    return {'chips': chips, 'width': lay['span_u'], 'length': lay['module_length'],
+            'span_u_cm': lay['span_u'], 'module_length_cm': lay['module_length'],
+            'stave_width_cm': g.stave_width_cm, 'stave_length_cm': g.stave_length_cm,
+            'total_modules_length_cm': lay['span_z'],
+            'active_area_cm2': len(chips) * active_u * active_z,
             'eoc_width_mm': g.eoc_width_mm}
+
+
+def sample_track_pair(g: Geometry, eta_max=2.0, sigma_z_cm=0.0, seed=None):
+    """Return one hit and one miss, each within the ideal barrel acceptance.
+
+    Hit/miss classification uses the exact same `evaluate` path as optimization.
+    An inefficient track preferentially crosses a mechanical stave but misses
+    its active chips, making sensor dead regions visible as tracking losses.
+    Random state is fresh on every call, unless an explicit seed is supplied.
+    The XY overlay is a projection: eta and z0 are needed to explain misses.
+    """
+    g.validate()
+    if not 0.1 <= eta_max <= 5 or not 0 <= sigma_z_cm <= 40:
+        raise ValueError('Intervalli eta/sigma del vertice non validi.')
+    rng = np.random.default_rng(secrets.randbits(64) if seed is None else int(seed))
+    hit_track = None
+    miss_track = None
+    # A low-occupancy selection can have few misses/hits; expand if necessary.
+    for n in (2048, 8192, 32768):
+        tracks = Tracks(phi=rng.uniform(0, 2 * np.pi, n),
+                        eta=rng.uniform(-eta_max, eta_max, n),
+                        z0=rng.normal(0, sigma_z_cm, n) if sigma_z_cm else np.zeros(n))
+        _, mask = evaluate(g, tracks, return_masks=True)
+        valid = mask['reference']
+        hi = np.flatnonzero(valid & mask['active'])
+        # Prefer sensor inefficiency over a miss caused only by barrel gaps.
+        lo_physical = np.flatnonzero(valid & ~mask['active'] & mask['physical'])
+        lo = lo_physical if len(lo_physical) else np.flatnonzero(valid & ~mask['active'])
+
+        def record(k, hit):
+            phi = float(tracks.phi[k])
+            z_at_r = float(tracks.z0[k] + g.radius_cm * np.sinh(tracks.eta[k]))
+            if hit:
+                reason = 'Hit in area attiva'
+            elif not mask['physical'][k]:
+                reason = 'Nessuna intersezione con uno stave'
+            elif not mask['sensor'][k]:
+                reason = 'Gap o bordo meccanico tra i chip'
+            elif mask['eoc_only'][k]:
+                reason = 'Area inattiva del sensore (inclusa EOC)'
+            else:
+                reason = 'Margine inattivo del chip'
+            return {'efficient': bool(hit), 'phi_deg': float(np.rad2deg(phi)),
+                    'eta': float(tracks.eta[k]), 'z0_cm': float(tracks.z0[k]),
+                    'z_at_radius_cm': z_at_r, 'reason': reason,
+                    'x_end_cm': float(1.08 * (g.radius_cm + g.stave_width_cm / 2) * np.cos(phi)),
+                    'y_end_cm': float(1.08 * (g.radius_cm + g.stave_width_cm / 2) * np.sin(phi))}
+
+        if hit_track is None and len(hi):
+            hit_track = record(int(rng.choice(hi)), True)
+        if miss_track is None and len(lo):
+            miss_track = record(int(rng.choice(lo)), False)
+        if hit_track and miss_track:
+            return {'hit': hit_track, 'miss': miss_track}
+    raise ValueError('Impossibile estrarre entrambe le classi di traccia per questa geometria/accettanza.')
 
 
 def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_penalty_pp=0.0, target_radius_cm=21.0, seed=27, return_diagnostics=False):

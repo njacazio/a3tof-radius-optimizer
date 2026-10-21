@@ -5,7 +5,7 @@ Local Python + Flask web app for exploring and optimizing geometrical acceptance
 ## Run (Linux)
 
 ```bash
-unzip itof-optimizer-no-overlap.zip
+unzip itof-optimizer-center-tilt-live-tracks.zip
 cd itof-optimizer
 python3 -m venv .venv
 source .venv/bin/activate
@@ -23,7 +23,7 @@ Open **http://127.0.0.1:5000/**. JavaScript plots work offline: Plotly is bundle
 | --- | ---: |
 | Cylinder radius | 21 cm |
 | Number of staves | 24 |
-| Stave tilt | 3° |
+| Stave tilt | 3° (rotation about each stave midpoint) |
 
 ### Fixed stave and chip properties
 
@@ -41,6 +41,10 @@ Open **http://127.0.0.1:5000/**. JavaScript plots work offline: Plotly is bundle
 | Extra inactive borders (each side) | 0 mm in both `u` and `z` |
 | Inter-chip gaps in `u` and `z` | 0 mm (not yet supplied) |
 | Inter-module gap in `z` | 0 mm (not yet supplied) |
+
+### Tilt convention
+
+The stave midpoint sits at `(R*cos(phi_i), R*sin(phi_i))` for each azimuthal slot and stays at that exact position when tilt changes. The stave is rotated about **its own midpoint**, *not an endpoint*, by `tilt_deg` from the local tangential direction (tilt = 0° is tangential to the radius-R cylinder). A dedicated `stave_frames()` helper controls the segments used for clearance, the XY plot, and the trajectory-plane intersection convention. The XY plot marks every stave midpoint/pivot.
 
 The **end-of-column runs along the 26 mm chip edge**, and extends 2 mm *inward along its 30 mm dimension*. The default active rectangle is therefore **26 × 28 mm = 728 mm²** out of 780 mm²: **93.33% active chip fraction**, before any extra dead borders and gaps.
 
@@ -83,11 +87,12 @@ These quantities represent **geometrical coverage, not tracking/reconstruction o
 
 ## Dashboard
 
-1. Change design variables (radius, stave count, tilt).
-2. Edit fixed chip size, EOC, extra dead edges and gaps when physical information becomes available.
-3. Simulate and inspect stave XY view, hit probability vs phi/eta, eta–phi map, and a detailed local module map. EOC is explicitly drawn in orange; active silicon is teal. Staves violating the distance constraint appear in red in the XY panel, with the failing stave pair and clearance shown in a banner.
-4. Set scan ranges for the *three design parameters only* and optimize. The comparison uses the **same generated track sample** for each candidate. Results can be applied and exported as CSV.
-5. Save/load an entire configuration as JSON.
+1. Change design variables (radius, stave count, tilt). The geometry/clearance preview and **module drawing/size readouts update live** (debounced ~160 ms) on chip, gap, segmentation, and stave input changes; full tracking efficiency is recomputed only when clicking **Simula geometria**.
+2. Click **+ Traccia efficiente e inefficiente** to add **two new random tracks** to the XY panel (one active hit, one miss). Each click **adds** a pair without erasing older tracks; **Rimuovi tracce** clears the overlay. Tracks are reclassified with the same Python hit logic used by efficiency calculations. Both are conditioned on entering the ideal cylinder within the finite barrel length, and misses preferentially cross a stave but avoid active silicon. The XY plot is a **projection only**; eta and z0 determine whether silicon/EOC are hit. Markers at ray endpoints show the ray direction, **not** the actual sensor hit position. Track overlays reset when detector geometry or the track-generation eta/sigma settings change.
+3. Edit fixed chip size, EOC, extra dead edges and gaps when physical information becomes available.
+4. Simulate and inspect stave XY view, hit probability vs phi/eta, eta–phi map, and a detailed local module map. EOC is explicitly drawn in orange; active silicon is teal. Staves violating the distance constraint appear in red in the XY panel, with the failing stave pair and clearance shown in a banner.
+5. Set scan ranges for the *three design parameters only* and optimize. The comparison uses the **same generated track sample** for each candidate. Results can be applied and exported as CSV.
+6. Save/load an entire configuration as JSON.
 
 ## Test
 
@@ -96,7 +101,7 @@ pip install pytest
 pytest -q
 ```
 
-Tests cover: XY stave collisions, all-pair/periodic checks, minimum separation vs tolerance, fixed stave thickness in optimization, EOC asymmetry and orientation (+z), single-chip nominal area, chip-array envelope (no artificial stretching), validation, optimization bounds and preservation of fixed sensor geometry, and API request behavior if Flask is installed.
+Tests cover: rotation about stave midpoint, recalculation of module dimensions, seeded random hit/miss tracks consistent with the evaluation masks, XY stave collisions, all-pair/periodic checks, minimum separation vs tolerance, fixed stave thickness in optimization, EOC asymmetry and orientation (+z), single-chip nominal area, chip-array envelope (no artificial stretching), validation, optimization bounds and preservation of fixed sensor geometry, and API request behavior if Flask is installed.
 
 ## Implementation and endpoints
 
@@ -108,6 +113,8 @@ Tests cover: XY stave collisions, all-pair/periodic checks, minimum separation v
 - `GET /api/defaults`
 - `POST /api/simulate`
 - `POST /api/optimize`
+- `POST /api/preview` — rapid module, XY geometry and clearance preview without recomputing tracks (it will also draw invalid stave-clearance configurations so they can be corrected).
+- `POST /api/sample-tracks` — one random active and one random inactive track, inside the ideal reference acceptance. Accepts optional `sample_seed` for a reproducible test; otherwise each request gets a fresh random sample.
 
 Example optimization body:
 

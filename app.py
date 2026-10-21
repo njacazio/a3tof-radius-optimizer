@@ -2,7 +2,7 @@
 import os
 from flask import Flask, jsonify, render_template, request
 from geometry import (Geometry, make_tracks, evaluate, diagnostic_plots, optimize,
-                      geometry_plot, stave_clearance_report)
+                      geometry_plot, stave_clearance_report, module_plot, sample_track_pair)
 
 app = Flask(__name__)
 app.json.sort_keys = False
@@ -45,6 +45,31 @@ def defaults():
                     'tracks': {'n_tracks': 15000, 'eta_max': 2.0, 'vertex_sigma_z_cm': 0.0, 'seed': 12345}})
 
 
+@app.post('/api/preview')
+def preview():
+    """Fast geometry/module preview, does not evaluate tracks or demand clearance."""
+    try:
+        g = read_geom(request.get_json(force=True), check_clearance=False)
+        return jsonify({'geometry': geometry_plot(g), 'module': module_plot(g),
+                        'clearance': stave_clearance_report(g)})
+    except (ValueError, TypeError, OverflowError, KeyError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.post('/api/sample-tracks')
+def sample_tracks():
+    """Each call returns one random efficient and one random inefficient ray."""
+    try:
+        p = request.get_json(force=True)
+        g = read_geom(p)
+        result = sample_track_pair(g, eta_max=float(p.get('eta_max', 2)),
+                                   sigma_z_cm=float(p.get('vertex_sigma_z_cm', 0)),
+                                   seed=p.get('sample_seed'))
+        return jsonify(result)
+    except (ValueError, TypeError, OverflowError, KeyError) as e:
+        return jsonify({'error': str(e)}), 400
+
+
 @app.post('/api/simulate')
 def simulate():
     try:
@@ -59,7 +84,8 @@ def simulate():
                           f"{clearance['required_clearance_mm']:.3f} mm. "
                           f"Coppie non conformi: {clearance['n_violating_pairs']}."),
                 'clearance': clearance,
-                'geometry': geometry_plot(g)
+                'geometry': geometry_plot(g),
+                'module': module_plot(g),
             }), 422
         tracks, eta_max = read_tracks(p)
         metrics, masks = evaluate(g, tracks, return_masks=True)

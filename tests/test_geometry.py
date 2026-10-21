@@ -214,3 +214,59 @@ def test_cannot_optimize_mechanical_constraint():
               'stave_clearance_mm': (0,2)}
     with pytest.raises(ValueError, match='Bounds non ammessi'):
         optimize(Geometry(), bounds, make_tracks(200), n_candidates=10)
+
+
+def test_tilt_rotates_around_unchanged_stave_center():
+    """Rotation may never shift the stave midpoint away from the nominal radius."""
+    from geometry import stave_frames, stave_segments
+    g = Geometry(radius_cm=21, n_staves=24, phi_offset_deg=8.5)
+    midpoints = []
+    for angle in (-19.0, 0.0, 3.0, 16.0):
+        trial = replace(g, tilt_deg=angle)
+        center, axis_u, normal = stave_frames(trial)
+        segments = stave_segments(trial)
+        assert np.allclose(0.5 * (segments[:, 0] + segments[:, 1]), center, atol=1.e-12)
+        assert np.allclose(np.linalg.norm(center, axis=1), 21)
+        assert np.allclose(segments[:, 1] - segments[:, 0], trial.stave_width_cm * axis_u)
+        assert np.allclose(np.einsum('ij,ij->i', axis_u, normal), 0, atol=1.e-14)
+        midpoints.append(center)
+    assert all(np.allclose(center, midpoints[0]) for center in midpoints[1:])
+
+
+def test_module_dimensions_recomputed_from_user_inputs():
+    nominal = module_plot(Geometry())
+    assert nominal['span_u_cm'] == pytest.approx(5.2)
+    assert nominal['module_length_cm'] == pytest.approx(12.0)
+    assert nominal['total_modules_length_cm'] == pytest.approx(120.0)
+    changed = module_plot(Geometry(chip_gap_u_mm=1.0, chip_gap_z_mm=0.5,
+                                   module_gap_z_mm=1.0))
+    assert changed['span_u_cm'] == pytest.approx(5.3)
+    assert changed['module_length_cm'] == pytest.approx(12.15)
+    assert changed['total_modules_length_cm'] == pytest.approx(122.4)
+    assert changed['active_area_cm2'] == pytest.approx(nominal['active_area_cm2'])
+    # The preview can still draw a mechanical configuration with invalid clearance.
+    assert module_plot(Geometry(n_staves=30, tilt_deg=0))['span_u_cm'] == pytest.approx(5.2)
+
+
+def test_random_track_pair_classification_matches_evaluation():
+    from geometry import sample_track_pair
+    g = Geometry()
+    pairs = [sample_track_pair(g, seed=s) for s in (10, 11, 12)]
+    assert sample_track_pair(g, seed=10) == pairs[0]
+    assert pairs[0] != pairs[1]
+    for pair in pairs:
+        assert pair['hit']['efficient'] and not pair['miss']['efficient']
+        for cls, is_hit in (('hit', True), ('miss', False)):
+            t = pair[cls]
+            single = Tracks(np.array([np.deg2rad(t['phi_deg'])]),
+                            np.array([t['eta']]), np.array([t['z0_cm']]))
+            _, masks = evaluate(g, single, return_masks=True)
+            assert bool(masks['reference'][0])  # Miss must not simply leave barrel.
+            assert bool(masks['active'][0]) == is_hit
+            assert t['x_end_cm']**2 + t['y_end_cm']**2 > g.radius_cm**2
+
+
+def test_random_track_pair_enforces_clearance():
+    from geometry import sample_track_pair
+    with pytest.raises(StaveClearanceError):
+        sample_track_pair(Geometry(n_staves=30, tilt_deg=0), seed=1)

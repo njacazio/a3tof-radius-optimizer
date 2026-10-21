@@ -29,11 +29,13 @@
     .sticky { position:sticky; bottom:0; margin:12px -20px -24px; background:linear-gradient(0deg,#10182a 82%,transparent); padding:22px 20px 18px; }
     .hint { font-size:12px; color:var(--muted); margin:12px 0; }
     .status { min-height:20px; margin-top:10px; font-size:12px; color:var(--accent); } .status.bad { color:var(--red); }
-    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
     .metric { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; }
     .metric strong { font-size:29px; line-height:1.1; letter-spacing:-.03em; display:block; margin:10px 0 6px; }
     .metric span { font-size:12px; color:var(--muted); }
     .metric small { color:#9baabe; display:block; margin-top:6px; }
+    .constraint-banner { font-size:13px; margin:0 0 18px; color:var(--accent); min-height:20px; }
+    .constraint-banner.bad {color:var(--red); font-weight:600;}
     .plots { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:17px; min-width:0; }
     .plot { width:100%; height:360px; }
@@ -62,9 +64,10 @@
     <h1>Geometry Lab</h1>
     <p class="muted">Editor della geometria, simulazione veloce e ricerca di configurazioni ottimali.</p>
     <section class="group"><h2>01 · Variabili di progetto</h2><div id="geomFields"></div>
-      <p class="hint">Solo raggio, numero di stave e tilt angle vengono variati durante la ricerca.</p>
+      <p class="hint">Solo raggio, numero di stave e tilt angle vengono variati durante la ricerca. Le configurazioni con stave troppo vicini o intersecanti sono scartate.</p>
     </section>
     <section class="group"><h2>02 · Sensori e altri parametri fissi</h2><div id="sensorFields"></div>
+      <p class="hint"><strong>Vincolo meccanico:</strong> la distanza minima fra tutti gli stave deve essere ≥ 1 mm (modificabile). Lo spessore degli stave è inizialmente 0 mm nel modello idealizzato: impostare lo spessore fisico per un controllo conservativo degli ingombri reali. Sono controllate tutte le coppie, anche non adiacenti.</p>
       <p class="hint">Chip nominale: <strong>26 mm trasversi (u) × 30 mm lungo z</strong>. La <strong>end-of-column (2 mm)</strong> è una sola fascia inattiva sul bordo a +z, lungo il lato da 26 mm. Tutti questi parametri sono <strong>fissi durante l'ottimizzazione</strong>. I margini morti aggiuntivi X/Z, se presenti, sono espressi in mm per lato; gap chip/modulo preimpostati a zero perché non ancora specificati.</p>
     </section>
     <section class="group"><h2>03 · Tracce generate</h2><div id="trackFields"></div>
@@ -85,13 +88,15 @@
   <main>
     <div class="mark">Interactive acceptance study</div>
     <h1>iTOF · Copertura geometrica</h1>
-    <p class="subtitle">Intersezione delle tracce con gli stave nel piano trasverso e i chip attivi lungo z. Le sovrapposizioni sono contate correttamente: una traccia che attraversa almeno un chip attivo viene contata una volta sola.</p>
+    <p class="subtitle">Intersezione delle tracce con gli stave nel piano trasverso e i chip attivi lungo z. Il controllo meccanico richiede una distanza minima fra ogni coppia di stave prima del calcolo di efficienza.</p>
     <div class="metrics">
       <div class="metric"><span>Efficienza sul campione</span><strong id="mOverall">—</strong><small>Hit attivi / tutte le tracce generate</small></div>
       <div class="metric"><span>Efficienza rispetto al cilindro ideale</span><strong id="mIdeal">—</strong><small>Hit attivi tra le tracce nel cilindro ideale</small></div>
       <div class="metric"><span>Solo zone inattive</span><strong id="mDead">—</strong><small>Tracce su uno stave ma senza hit attivo</small></div>
       <div class="metric"><span>Chip complessivi</span><strong id="mChips">—</strong><small id="mCounts">Configurazione corrente</small></div>
+      <div class="metric"><span>Min. distanza stave</span><strong id="mClearance">—</strong><small id="mClearanceDetail">Coppia di stave più vicina</small></div>
     </div>
+    <div class="constraint-banner" id="constraintBanner" aria-live="polite"></div>
     <div class="plots">
       <section class="panel"><h2>Geometria degli stave · proiezione XY</h2><div class="plot" id="xy"></div></section>
       <section class="panel"><h2>Probabilità di hit vs φ</h2><div class="plot" id="phi"></div></section>
@@ -101,11 +106,11 @@
     </div>
     <section class="panel results" id="results" style="display:none">
       <div class="results-header"><div><div class="mark">Design space exploration</div><h2 style="margin:6px 0">Configurazioni migliori</h2></div><button class="secondary" onclick="downloadCSV()">Esporta CSV</button></div>
-      <p class="muted">La ricerca usa lo stesso campione di tracce per ogni candidato. Dopo aver applicato una configurazione, riesegue una simulazione più dettagliata.</p>
+      <p class="muted">La ricerca usa lo stesso campione di tracce per ogni candidato. Le geometrie che violano la distanza minima tra stave sono escluse prima di calcolare l’efficienza. Dopo aver applicato una configurazione, viene eseguita una simulazione più dettagliata.</p>
       <div class="plot short" id="scatter"></div>
-      <div class="table-wrap"><table><thead><tr><th>#</th><th>r [cm]</th><th>Stave</th><th>Tilt [°]</th><th>Eff. [%]</th><th>Score [pp]</th><th></th></tr></thead><tbody id="table"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>#</th><th>r [cm]</th><th>Stave</th><th>Tilt [°]</th><th>Min. gap [mm]</th><th>Eff. [%]</th><th>Score [pp]</th><th></th></tr></thead><tbody id="table"></tbody></table></div>
     </section>
-    <div class="method"><strong>Perimetro del modello:</strong> ottimizza la copertura geometrica di un singolo layer iTOF, non l'efficienza di ricostruzione delle tracce. Il cilindro ideale di riferimento ha raggio r, lunghezza L e copertura azimutale completa. Il modello usa chip fisici da 26 × 30 mm, con un'unica end-of-column da 2 mm lungo il lato da 26 mm, collocata a +z; eventuali margini morti aggiuntivi sono simmetrici. Le dimensioni dello stave (5,42 × 129 cm) possono superare l'inviluppo dei chip, senza dilatarli artificialmente. Non include materiali, scattering, B-field, timing, sensor response o matching TRK↔iTOF. I parametri del chip sono configurabili ma non vengono ottimizzati.</div>
+    <div class="method"><strong>Perimetro del modello:</strong> ottimizza la copertura geometrica di un singolo layer iTOF, non l'efficienza di ricostruzione delle tracce. Il cilindro ideale di riferimento ha raggio r, lunghezza L e copertura azimutale completa. Il modello usa chip fisici da 26 × 30 mm, con un'unica end-of-column da 2 mm lungo il lato da 26 mm, collocata a +z; eventuali margini morti aggiuntivi sono simmetrici. La distanza minima richiesta è 1 mm per default; lo spessore meccanico viene incluso solo se specificato. Le dimensioni dello stave (5,42 × 129 cm) possono superare l'inviluppo dei chip, senza dilatarli artificialmente. Non include materiali, scattering, B-field, timing, sensor response o matching TRK↔iTOF. I parametri del chip sono configurabili ma non vengono ottimizzati.</div>
   </main>
 </div>
 <script>
@@ -114,6 +119,7 @@ const designSpec = [
 ];
 const sensorSpec = [
  ['stave_width_cm','Larghezza stave [cm]',5.42,0.01],['stave_length_cm','Lunghezza stave [cm]',129,0.1],
+ ['stave_clearance_mm','Min. distanza stave [mm]',1,0.1],['stave_thickness_mm','Spessore stave in XY [mm]',0,0.1],
  ['phi_offset_deg','φ offset [°]',0,0.1],['chips_across','Chip lungo X',2,1],
  ['modules_z','Moduli lungo Z',10,1],['chips_per_module_z','Chip / modulo lungo Z',4,1],
  ['chip_width_cm','Lato trasverso chip [cm]',2.6,0.1],['chip_length_cm','Lato lungo Z chip [cm]',3.0,0.1],
@@ -139,8 +145,33 @@ function payload(){return {geometry:read('g_',gSpec),...read('t_',tSpec)};}
 function pct(x){return x===null||x===undefined?'—':(100*x).toFixed(2)+'%';}
 function status(s,bad=false){let el=document.getElementById('status');el.textContent=s;el.className='status'+(bad?' bad':'');}
 function busy(on){document.getElementById('run').disabled=on;document.getElementById('opt').disabled=on;}
-async function callApi(url, p){let resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});let result=await resp.json();if(!resp.ok)throw Error(result.error||'Errore nella richiesta');return result;}
+async function callApi(url, p){let resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});let result=await resp.json();if(!resp.ok){let err=new Error(result.error||'Errore nella richiesta');err.details=result;throw err;}return result;}
 function plot(id,data,opts={}){let layout={...theme,...opts,xaxis:{...theme.xaxis,...(opts.xaxis||{})},yaxis:{...theme.yaxis,...(opts.yaxis||{})}};Plotly.react(id,data,layout,{responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']});}
+function showClearance(c){
+ const el=document.getElementById('mClearance');
+ el.textContent=`${c.min_clearance_mm.toFixed(2)} mm`;
+ el.style.color=c.valid?'var(--accent)':'var(--red)';
+ document.getElementById('mClearanceDetail').textContent=`Stave ${c.closest_pair.join('–')} · minimo ${c.required_clearance_mm.toFixed(2)} mm`;
+ const banner=document.getElementById('constraintBanner');
+ banner.className='constraint-banner'+(c.valid?'':' bad');
+ banner.textContent=c.valid?`✓ Vincolo fra stave soddisfatto (distanza ≥ ${c.required_clearance_mm.toFixed(2)} mm).`:
+   `✕ Geometria non ammessa: ${c.n_violating_pairs} coppie non conformi. Le stave coinvolte sono evidenziate in rosso; non viene calcolata l'efficienza.`;
+}
+function showXY(g){
+ const traces=[
+  {x:g.circle_x,y:g.circle_y,mode:'lines',name:'Raggio centrale',line:{color:'#54657d',dash:'dot',width:1}},
+  {x:g.staves_x,y:g.staves_y,mode:'lines',name:'Stave fisico',line:{color:'#f6b96f',width:6}},
+  {x:g.active_x,y:g.active_y,mode:'lines',name:'Bande chip (u)',line:{color:'#62d3cb',width:4}}];
+ if(g.invalid_x?.length)traces.push({x:g.invalid_x,y:g.invalid_y,mode:'lines',name:'Stave non conformi',line:{color:'#f98383',width:7}});
+ plot('xy',traces,{xaxis:{title:'X [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'Y [cm]'},legend:{orientation:'h',y:-0.2},margin:{l:48,r:15,t:10,b:70}});
+}
+function showInvalidGeometry(details){
+ showClearance(details.clearance);
+ for(const id of ['mOverall','mIdeal','mDead','mChips'])document.getElementById(id).textContent='—';
+ document.getElementById('mCounts').textContent='Geometria rifiutata';
+ for(const id of ['phi','eta','heatmap','module']) { Plotly.purge(id);document.getElementById(id).innerHTML=''; }
+ showXY(details.geometry);
+}
 function showSimulation(result){
  const m=result.metrics,p=result.plots;
  document.getElementById('mOverall').textContent=pct(m.eff_all);
@@ -148,11 +179,8 @@ function showSimulation(result){
  document.getElementById('mDead').textContent=pct(m.dead_only_fraction);
  document.getElementById('mChips').textContent=m.n_chips.toLocaleString('it-IT');
  document.getElementById('mCounts').textContent=`${m.n_active}/${m.n_tracks} tracce attive · frazione attiva/chip ${pct(m.active_chip_area_fraction)} · area sensibile ${m.active_sensor_area_cm2.toFixed(0)} cm²`;
- plot('xy',[
-  {x:p.geometry.circle_x,y:p.geometry.circle_y,mode:'lines',name:'Raggio centrale',line:{color:'#54657d',dash:'dot',width:1}},
-  {x:p.geometry.staves_x,y:p.geometry.staves_y,mode:'lines',name:'Stave fisico',line:{color:'#f6b96f',width:6}},
-  {x:p.geometry.active_x,y:p.geometry.active_y,mode:'lines',name:'Bande chip (u)',line:{color:'#62d3cb',width:4}}],
-  {xaxis:{title:'X [cm]',scaleanchor:'y',scaleratio:1},yaxis:{title:'Y [cm]'},legend:{orientation:'h',y:-0.2},margin:{l:48,r:15,t:10,b:70}});
+ showClearance(m.stave_clearance);
+ showXY(p.geometry);
  plot('phi',[{x:p.phi.x,y:p.phi.y,mode:'lines',name:'Hit',line:{color:'#62d3cb',width:2.5}}],{xaxis:{title:'φ [°]',range:[0,360]},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('eta',[{x:p.eta.x,y:p.eta.y,mode:'lines',name:'Hit',line:{color:'#f6b96f',width:2.5}}],{xaxis:{title:'η'},yaxis:{title:'Efficienza',range:[0,1.05],tickformat:'.0%'}});
  plot('heatmap',[{type:'heatmap',x:p.heatmap.x,y:p.heatmap.y,z:p.heatmap.z,zmin:0,zmax:1,colorscale:[[0,'#1a2b45'],[0.5,'#2d7e92'],[1,'#69dfc8']],colorbar:{title:'Eff.'},hovertemplate:'φ %{x:.1f}°<br>η %{y:.2f}<br>Eff. %{z:.1%}<extra></extra>'}],{xaxis:{title:'φ [°]'},yaxis:{title:'η'}});
@@ -165,11 +193,12 @@ function showSimulation(result){
  });
  plot('module',modules,{xaxis:{title:'u locale [cm]'},yaxis:{title:'z locale [cm]',scaleanchor:'x',scaleratio:1},margin:{l:60,r:10,t:10,b:55}});
 }
-async function simulate(){busy(true);status('Calcolo della copertura geometrica…');try{let data=await callApi('/api/simulate',payload());showSimulation(data);status('Simulazione completata.');}catch(e){status(e.message,true);}finally{busy(false);}}
+async function simulate(){busy(true);status('Calcolo della copertura geometrica…');try{let data=await callApi('/api/simulate',payload());showSimulation(data);status('Simulazione completata.');}catch(e){if(e.details?.clearance&&e.details?.geometry)showInvalidGeometry(e.details);status(e.message,true);}finally{busy(false);}}
 async function runOptimization(){busy(true);status('Valutazione delle configurazioni candidate…');try{
  const p=payload(),bounds={}; for(const [key] of bSpec) bounds[key]=[Number(document.getElementById(`b_${key}_min`).value),Number(document.getElementById(`b_${key}_max`).value)];
  p.optimization={...read('o_',oSpec),bounds};p.n_tracks_opt=p.optimization.n_tracks_opt;
- const result=await callApi('/api/optimize',p);candidates=result.candidates;showCandidates();status(`${candidates.length} configurazioni valutate. Clicca «Usa» per applicarne una.`);
+ const result=await callApi('/api/optimize',p);candidates=result.candidates;showCandidates();
+ const d=result.diagnostics;status(`${d.evaluated} valide · ${d.rejected_clearance} scartate per distanza stave · ${d.rejected_geometry} per geometria non valida · ${d.duplicate_candidates} duplicati. Clicca «Usa» per applicarne una.`);
  }catch(e){status(e.message,true);}finally{busy(false);}}
 function showCandidates(){
  document.getElementById('results').style.display='block';
@@ -177,7 +206,7 @@ function showCandidates(){
  marker:{color:candidates.map(c=>c.score_pp),colorscale:'Viridis',size:10,colorbar:{title:'Score'}},
  text:candidates.map(c=>`r=${c.radius_cm.toFixed(2)} cm<br>tilt=${c.tilt_deg.toFixed(2)}°`),hovertemplate:'N stave %{x}<br>Eff. %{y:.2f}%<br>%{text}<extra></extra>'}],
  {xaxis:{title:'Numero di stave',dtick:1},yaxis:{title:'Efficienza globale [%]',range:[0,101]},margin:{l:55,r:20,t:15,b:55}});
- document.getElementById('table').innerHTML=candidates.slice(0,20).map((c,i)=>`<tr><td>${i+1}</td><td>${c.radius_cm.toFixed(2)}</td><td>${c.n_staves}</td><td>${c.tilt_deg.toFixed(2)}</td><td>${(100*c.eff_all).toFixed(2)}</td><td>${c.score_pp.toFixed(2)}</td><td><button class="use" onclick="applyCandidate(${i})">Usa</button></td></tr>`).join('');
+ document.getElementById('table').innerHTML=candidates.slice(0,20).map((c,i)=>`<tr><td>${i+1}</td><td>${c.radius_cm.toFixed(2)}</td><td>${c.n_staves}</td><td>${c.tilt_deg.toFixed(2)}</td><td>${c.min_clearance_mm.toFixed(2)}</td><td>${(100*c.eff_all).toFixed(2)}</td><td>${c.score_pp.toFixed(2)}</td><td><button class="use" onclick="applyCandidate(${i})">Usa</button></td></tr>`).join('');
 }
 function applyCandidate(i){const c=candidates[i];for(const k of ['radius_cm','n_staves','tilt_deg'])document.getElementById('g_'+k).value=c[k];window.scrollTo({top:0,behavior:'smooth'});simulate();}
 function downloadBlob(filename,text,type){let a=document.createElement('a'),u=URL.createObjectURL(new Blob([text],{type}));a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),300);}

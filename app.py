@@ -1,13 +1,14 @@
 """Run with: python app.py; open http://127.0.0.1:5000"""
 import os
 from flask import Flask, jsonify, render_template, request
-from geometry import Geometry, make_tracks, evaluate, diagnostic_plots, optimize
+from geometry import (Geometry, make_tracks, evaluate, diagnostic_plots, optimize,
+                      geometry_plot, stave_clearance_report)
 
 app = Flask(__name__)
 app.json.sort_keys = False
 
 
-def read_geom(payload):
+def read_geom(payload, check_clearance=True):
     cfg = payload.get('geometry', {})
     if not isinstance(cfg, dict):
         raise ValueError('La geometria deve essere un oggetto JSON.')
@@ -22,7 +23,7 @@ def read_geom(payload):
         if not float(data[key]).is_integer():
             raise ValueError(f'{key} deve essere un numero intero.')
     data = {k: (int(v) if k in int_fields else float(v)) for k, v in data.items()}
-    return Geometry(**data).validate()
+    return Geometry(**data).validate(check_clearance=check_clearance)
 
 
 def read_tracks(p, default_n=15000):
@@ -48,7 +49,18 @@ def defaults():
 def simulate():
     try:
         p = request.get_json(force=True)
-        g = read_geom(p)
+        g = read_geom(p, check_clearance=False)
+        clearance = stave_clearance_report(g)
+        if not clearance['valid']:
+            pair = clearance['closest_pair']
+            return jsonify({
+                'error': (f"Distanza insufficiente tra stave: {clearance['min_clearance_mm']:.3f} mm "
+                          f"(stave {pair[0]}–{pair[1]}). Richiesta almeno "
+                          f"{clearance['required_clearance_mm']:.3f} mm. "
+                          f"Coppie non conformi: {clearance['n_violating_pairs']}."),
+                'clearance': clearance,
+                'geometry': geometry_plot(g)
+            }), 422
         tracks, eta_max = read_tracks(p)
         metrics, masks = evaluate(g, tracks, return_masks=True)
         plots = diagnostic_plots(g, tracks, masks, eta_max)
@@ -61,7 +73,7 @@ def simulate():
 def optimize_api():
     try:
         p = request.get_json(force=True)
-        g = read_geom(p)
+        g = read_geom(p, check_clearance=False)
         tracks, _ = read_tracks({**p, 'n_tracks': int(p.get('n_tracks_opt', 4000))}, default_n=4000)
         config = p.get('optimization', {})
         bounds = config.get('bounds', {})
@@ -71,14 +83,16 @@ def optimize_api():
             raise ValueError('Intervalli di ottimizzazione non ammessi: ' + ', '.join(sorted(extra)) + '. La dead area è fissa.')
         bounds = {f: [float(x) for x in bounds.get(f, [getattr(g, f), getattr(g, f)])]
                   for f in ['radius_cm', 'n_staves', 'tilt_deg']}
-        rows = optimize(g, bounds, tracks, n_candidates=int(config.get('n_candidates', 80)),
+        rows, diagnostics = optimize(g, bounds, tracks, n_candidates=int(config.get('n_candidates', 80)),
                         stave_penalty_pp=float(config.get('stave_penalty_pp', 0.1)),
                         radius_penalty_pp=float(config.get('radius_penalty_pp', 0.0)),
                         target_radius_cm=float(config.get('target_radius_cm', 21.0)),
-                        seed=int(p.get('seed', 12345)))
+                        seed=int(p.get('seed', 12345)), return_diagnostics=True)
         if not rows:
-            return jsonify({'error': 'Nessuna configurazione valida nei limiti scelti.'}), 400
-        return jsonify({'candidates': rows, 'best': rows[0]})
+            return jsonify({'error': ('Nessuna configurazione soddisfa i vincoli nei limiti scelti. '
+                                      f"Scartate per distanza tra stave: {diagnostics['rejected_clearance']}."),
+                            'diagnostics': diagnostics}), 400
+        return jsonify({'candidates': rows, 'best': rows[0], 'diagnostics': diagnostics})
     except (ValueError, TypeError, OverflowError, KeyError) as e:
         return jsonify({'error': str(e)}), 400
 

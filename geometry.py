@@ -31,12 +31,18 @@ class Geometry:
     dead_x_mm: float = 0.0
     dead_z_mm: float = 0.0
     phi_offset_deg: float = 0.0
+    # Fixed mechanical constraint. Require at least this much separation in XY.
+    stave_clearance_mm: float = 1.0
+    # Optional stave thickness, measured perpendicular to the stave's long XY axis.
+    # Zero is an ideal infinitely thin stave until a mechanical thickness is known.
+    # Physical clearance is conservatively bounded by (axis-segment distance - thickness).
+    stave_thickness_mm: float = 0.0
 
     @property
     def chips_z(self):
         return self.modules_z * self.chips_per_module_z
 
-    def validate(self):
+    def validate(self, check_clearance=True):
         if not all(math.isfinite(float(v)) for v in asdict(self).values()):
             raise ValueError('Tutti i parametri geometrici devono essere numeri finiti.')
         if not 1 <= self.radius_cm <= 200 or not 2 <= self.n_staves <= 300:
@@ -45,6 +51,8 @@ class Geometry:
             raise ValueError('Dimensioni dello stave fuori intervallo.')
         if not -80 <= self.tilt_deg <= 80 or not -360 <= self.phi_offset_deg <= 360:
             raise ValueError('Angolo fuori intervallo.')
+        if not 0 <= self.stave_clearance_mm <= 100 or not 0 <= self.stave_thickness_mm <= 100:
+            raise ValueError('Distanza minima tra stave e spessore devono essere tra 0 e 100 mm.')
         if not 1 <= self.chips_across <= 10 or not 1 <= self.modules_z <= 100 or not 1 <= self.chips_per_module_z <= 20:
             raise ValueError('Segmentazione non valida.')
         if self.chip_width_cm <= 0 or self.chip_length_cm <= 0:
@@ -61,7 +69,97 @@ class Geometry:
             raise ValueError('Il numero di chip con le dimensioni/gap indicati supera la larghezza dello stave.')
         if lay['span_z'] > self.stave_length_cm + 1.e-9:
             raise ValueError('Il numero di chip con le dimensioni/gap indicati supera la lunghezza dello stave.')
+        if check_clearance:
+            report = stave_clearance_report(self)
+            if not report['valid']:
+                raise StaveClearanceError(report)
         return self
+
+
+
+class StaveClearanceError(ValueError):
+    """Invalid mechanical layout, with a structured diagnostic for the UI."""
+
+    def __init__(self, report):
+        self.report = report
+        pair = report['closest_pair']
+        super().__init__(
+            f"Distanza insufficiente tra stave: {report['min_clearance_mm']:.3f} mm "
+            f"(coppia {pair[0]}–{pair[1]}); richiesta almeno "
+            f"{report['required_clearance_mm']:.3f} mm. "
+            f"Coppie non conformi: {report['n_violating_pairs']}."
+        )
+
+
+def stave_segments(g: Geometry):
+    """2D centerline segments of all mechanical staves, shape (n,2,2), cm."""
+    phi = np.deg2rad(g.phi_offset_deg) + np.arange(g.n_staves) * (2 * np.pi / g.n_staves)
+    theta = phi + np.deg2rad(g.tilt_deg)
+    centers = g.radius_cm * np.column_stack((np.cos(phi), np.sin(phi)))
+    tangent = np.column_stack((-np.sin(theta), np.cos(theta)))
+    half = 0.5 * g.stave_width_cm * tangent
+    return np.stack((centers - half, centers + half), axis=1)
+
+
+def stave_clearance_report(g: Geometry, max_pairs_reported=20):
+    """Check *all* distinct stave pairs, including non-neighbours and ring wraparound.
+
+    Exact minimum distance between finite, zero-thickness XY centerline segments.
+    For finite thickness, subtract stave_thickness_mm as a conservative lower bound
+    on the actual edge-to-edge clearance of the corresponding XY rectangles:
+    any physical stave rectangle lies within the capsule of radius thickness/2.
+    Negative clearance means that the inflated envelopes overlap. This is a
+    sufficient but, for thick staves, not necessary condition for non-intersection.
+
+    `stave_clearance_mm` is a *minimum allowed gap*, NOT an allowed penetration.
+    Staves with zero thickness that intersect have separation zero and fail if the
+    required gap is positive. No Z dependence; all staves share the same Z range.
+    """
+    if g.n_staves < 2:
+        raise ValueError('Occorrono almeno due stave.')
+    segs = stave_segments(g)
+    i, j = np.triu_indices(g.n_staves, 1)
+    p, p1 = segs[i, 0, :], segs[i, 1, :]
+    q, q1 = segs[j, 0, :], segs[j, 1, :]
+    r, s = p1 - p, q1 - q
+
+    def cross(a, b):
+        return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+
+    def point_segment_distance(points, origins, directions):
+        denom = np.einsum('ij,ij->i', directions, directions)
+        projection = np.einsum('ij,ij->i', points - origins, directions) / denom
+        closest = origins + np.clip(projection, 0, 1)[:, None] * directions
+        return np.linalg.norm(points - closest, axis=1)
+
+    d = np.minimum.reduce([
+        point_segment_distance(p, q, s), point_segment_distance(p1, q, s),
+        point_segment_distance(q, p, r), point_segment_distance(q1, p, r),
+    ])
+    div = cross(r, s)
+    qp = q - p
+    nonparallel = np.abs(div) > 1.e-12
+    t = np.divide(cross(qp, s), div, out=np.full(len(div), -1.), where=nonparallel)
+    u = np.divide(cross(qp, r), div, out=np.full(len(div), -1.), where=nonparallel)
+    crossing = nonparallel & (t >= -1.e-12) & (t <= 1+1.e-12) & (u >= -1.e-12) & (u <= 1+1.e-12)
+    d[crossing] = 0.
+    clear_mm = d * 10 - g.stave_thickness_mm
+    min_id = int(np.argmin(clear_mm))
+    # Numerical epsilon: 1 nm in this centimeter-scale model.
+    bad = np.flatnonzero(clear_mm < g.stave_clearance_mm - 1.e-6)
+    entries = [{'stave_a': int(i[k]+1), 'stave_b': int(j[k]+1),
+                'clearance_mm': float(clear_mm[k])} for k in bad[:max_pairs_reported]]
+    return {
+        'valid': len(bad) == 0,
+        'min_clearance_mm': float(clear_mm[min_id]),
+        'required_clearance_mm': g.stave_clearance_mm,
+        'stave_thickness_mm': g.stave_thickness_mm,
+        'closest_pair': [int(i[min_id]+1), int(j[min_id]+1)],
+        'n_violating_pairs': int(len(bad)),
+        'violating_pairs': entries,
+        'violating_staves': sorted(set((i[bad]+1).tolist() + (j[bad]+1).tolist())),
+        'conservative_with_thickness': g.stave_thickness_mm > 0,
+    }
 
 
 def chip_layout(g: Geometry):
@@ -193,6 +291,7 @@ def evaluate(geometry: Geometry, tracks: Tracks, return_masks=False):
         'active_sensor_area_cm2': n_chips * active_chip_width * active_chip_length,
         'active_chip_area_fraction': (active_chip_width * active_chip_length) / (g.chip_width_cm * g.chip_length_cm),
         'chip_area_cm2': g.chip_width_cm * g.chip_length_cm,
+        'stave_clearance': stave_clearance_report(g),
     }
     if return_masks:
         return metrics, dict(active=active, physical=physical, sensor=sensor, reference=reference)
@@ -228,7 +327,7 @@ def diagnostic_plots(g, tracks, masks, eta_max):
 
 
 def geometry_plot(g: Geometry):
-    g.validate()
+    g.validate(check_clearance=False)
     lay = chip_layout(g)
     base_x, base_y, active_x, active_y = [], [], [], []
     alpha = math.radians(g.tilt_deg)
@@ -248,7 +347,15 @@ def geometry_plot(g: Geometry):
             a, b = center + axis_u * low, center + axis_u * high
             active_x.extend([a[0], b[0], None])
             active_y.extend([a[1], b[1], None])
+    report = stave_clearance_report(g)
+    bad_x, bad_y = [], []
+    segments = stave_segments(g)
+    for stave in report['violating_staves']:
+        aa, bb = segments[stave-1]
+        bad_x.extend([float(aa[0]), float(bb[0]), None])
+        bad_y.extend([float(aa[1]), float(bb[1]), None])
     return {'staves_x': base_x, 'staves_y': base_y, 'active_x': active_x, 'active_y': active_y,
+            'invalid_x': bad_x, 'invalid_y': bad_y,
             'circle_x': (g.radius_cm * np.cos(np.linspace(0, 2 * np.pi, 361))).tolist(),
             'circle_y': (g.radius_cm * np.sin(np.linspace(0, 2 * np.pi, 361))).tolist()}
 
@@ -276,7 +383,7 @@ def module_plot(g: Geometry):
             'eoc_width_mm': g.eoc_width_mm}
 
 
-def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_penalty_pp=0.0, target_radius_cm=21.0, seed=27):
+def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_penalty_pp=0.0, target_radius_cm=21.0, seed=27, return_diagnostics=False):
     """Seeded random search + baseline, with common sampled tracks for fair comparison.
 
     Score uses absolute efficiency in percentage points, minus declared penalties.
@@ -298,6 +405,8 @@ def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_pe
     rng = np.random.default_rng(seed)
     rows = []
     seen = set()
+    rejected_clearance = 0
+    rejected_geometry = 0
     for field in fields:
         if field == 'n_staves' and math.ceil(bounds[field][0]) > math.floor(bounds[field][1]):
             raise ValueError('Intervallo del numero di stave senza valori interi.')
@@ -317,13 +426,22 @@ def optimize(g, bounds, tracks, n_candidates=80, stave_penalty_pp=0.1, radius_pe
         try:
             trial = replace(g, **params).validate()
             m = evaluate(trial, tracks)
+        except StaveClearanceError:
+            rejected_clearance += 1
+            continue
         except ValueError:
+            rejected_geometry += 1
             continue
         score_pp = 100 * m['eff_all'] - stave_penalty_pp * trial.n_staves - radius_penalty_pp * abs(trial.radius_cm - target_radius_cm)
         rows.append({**{f: getattr(trial, f) for f in fields},
                      'eff_all': m['eff_all'], 'eff_reference': m['eff_reference'],
-                     'n_chips': m['n_chips'], 'score_pp': score_pp})
+                     'n_chips': m['n_chips'], 'score_pp': score_pp,
+                     'min_clearance_mm': m['stave_clearance']['min_clearance_mm']})
     rows.sort(key=lambda r: r['score_pp'], reverse=True)
+    if return_diagnostics:
+        return rows, {'evaluated': len(rows), 'rejected_clearance': rejected_clearance,
+                      'rejected_geometry': rejected_geometry,
+                      'duplicate_candidates': len(choices) - len(seen)}
     return rows
 
 

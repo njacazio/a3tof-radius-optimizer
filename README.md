@@ -5,6 +5,8 @@ Local Python + Flask web app for exploring and optimizing geometrical acceptance
 ## Run (Linux)
 
 ```bash
+unzip itof-optimizer-no-overlap.zip
+cd itof-optimizer
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -29,6 +31,8 @@ Open **http://127.0.0.1:5000/**. JavaScript plots work offline: Plotly is bundle
 | --- | ---: |
 | Mechanical stave width | 5.42 cm |
 | Mechanical stave length | 129 cm |
+| **Minimum allowable stave separation** | **1 mm** (fixed constraint, configurable) |
+| Transverse stave thickness | 0 mm (idealized, unknown physical dimension) |
 | Chips across stave (`u`) | 2 |
 | Modules along beam (`z`) | 10 |
 | Chips per module along `z` | 4 |
@@ -44,7 +48,23 @@ With 2 chips across and 40 chips longitudinally, the array envelope is **5.2 cm 
 
 The +z orientation is a *coordinate convention* for this first implementation. The figure supplied establishes the side of the chip carrying EOC and its width, but does not by itself determine alternating chip orientations, precise module offsets, or independent gaps; these are **not inferred**. Every chip currently carries EOC at +z in local stave coordinates. Extending this to a measured per-chip orientation map is straightforward.
 
-**None of the chip properties, including EOC and additional dead margins, is optimized.** Only `radius_cm`, `n_staves`, `tilt_deg` may occur in scan bounds. The API explicitly rejects other scan variables.
+**None of the chip properties, including EOC and additional dead margins, is optimized.** Only `radius_cm`, `n_staves`, `tilt_deg` may occur in scan bounds. The API explicitly rejects other scan variables. Both the stave clearance requirement and thickness are **fixed during optimization**, and can be set in the sensor/mechanics panel.
+
+## No-overlap / minimum stave separation constraint
+
+All stave pairs are checked in the transverse XY plane (including nonadjacent staves and the periodic wraparound pair). Each stave is represented by a finite-width line segment whose endpoints are computed using its physical transverse width, radius, and tilt. The **exact closest distance between the centerline segments** is calculated, with intersections assigned a gap of **zero**. With nonzero stave thickness, an additional conservative allowance is subtracted:
+
+```
+conservative_clearance_mm = 10 * min_distance_between_XY_segments_cm - stave_thickness_mm
+```
+
+A geometry is allowed **only if** `conservative_clearance_mm >= stave_clearance_mm` for **every pair**. The default `stave_clearance_mm=1.0` means a required gap of **at least 1 mm**; it does *not* mean a 1 mm penetration is acceptable. This constraint ensures centerline nonintersections at zero thickness, and conservatively guarantees clearance for finite-thickness rectangular stave footprints when the thickness is supplied. It may exclude some layouts that would be possible with an exact detailed stave footprint.
+
+**IMPORTANT:** The stave's actual physical transverse thickness has not been specified. The default `stave_thickness_mm=0.0` is only a 2D idealization: **1 mm between infinitely thin stave segments is not a verified 1 mm mechanical gap between real staves.** Set a measured thickness before using the constraint as a mechanical interference check, or replace the simplified stave envelope with CAD-derived polygons.
+
+For the nominal `(R=21 cm, N=24, tilt=3°, stave width=5.42 cm)` geometry, the minimum centerline separation is about **3.04 mm**, which passes the default 1 mm requirement.
+
+Manual simulations that violate the rule do not produce an efficiency. Instead, the API replies with status 422 and reports the minimum gap, offending stave pair(s), and XY geometry; the dashboard highlights the affected staves **red**. Optimization candidates that violate the clearance requirement are skipped before simulation. The optimization results show minimum gap, and report the number of rejected geometries. Both gap and thickness stay fixed across all candidates.
 
 ## What is computed
 
@@ -57,7 +77,7 @@ Tracks start at `(0,0,z0)` with flat generated azimuth/eta (and optionally Gauss
 - `dead_only_fraction`: fraction crossing a stave envelope but not an active chip (including FPC regions and physical gaps).
 - `active_chip_area_fraction`: geometrical active chip area / physical chip area (93.33% for the defaults).
 
-Overlapping staves can recover otherwise inactive intersections. A trajectory counts once if any stave provides an active hit.
+Overlapping stave centerlines are forbidden by the no-overlap rule. A trajectory counts once if any active chip is hit.
 
 These quantities represent **geometrical coverage, not tracking/reconstruction or matching efficiency**. No magnetic bending, detector material, scattering, sensor response, timing, or matching of TRK to iTOF hits is included.
 
@@ -65,7 +85,7 @@ These quantities represent **geometrical coverage, not tracking/reconstruction o
 
 1. Change design variables (radius, stave count, tilt).
 2. Edit fixed chip size, EOC, extra dead edges and gaps when physical information becomes available.
-3. Simulate and inspect stave XY view, hit probability vs phi/eta, eta–phi map, and a detailed local module map. EOC is explicitly drawn in orange; active silicon is teal.
+3. Simulate and inspect stave XY view, hit probability vs phi/eta, eta–phi map, and a detailed local module map. EOC is explicitly drawn in orange; active silicon is teal. Staves violating the distance constraint appear in red in the XY panel, with the failing stave pair and clearance shown in a banner.
 4. Set scan ranges for the *three design parameters only* and optimize. The comparison uses the **same generated track sample** for each candidate. Results can be applied and exported as CSV.
 5. Save/load an entire configuration as JSON.
 
@@ -76,7 +96,7 @@ pip install pytest
 pytest -q
 ```
 
-Tests cover: EOC asymmetry and orientation (+z), single-chip nominal area, chip-array envelope (no artificial stretching), validation, optimization bounds and preservation of fixed sensor geometry, and API request behavior if Flask is installed.
+Tests cover: XY stave collisions, all-pair/periodic checks, minimum separation vs tolerance, fixed stave thickness in optimization, EOC asymmetry and orientation (+z), single-chip nominal area, chip-array envelope (no artificial stretching), validation, optimization bounds and preservation of fixed sensor geometry, and API request behavior if Flask is installed.
 
 ## Implementation and endpoints
 
@@ -95,6 +115,7 @@ Example optimization body:
 {
   "geometry": {
     "radius_cm": 21, "n_staves": 24, "tilt_deg": 3,
+    "stave_clearance_mm": 1.0, "stave_thickness_mm": 0.0,
     "chip_width_cm": 2.6, "chip_length_cm": 3.0,
     "eoc_width_mm": 2.0
   },

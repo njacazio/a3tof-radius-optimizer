@@ -16,7 +16,9 @@
     "chip_gap_z_mm": 0.0,
     "module_gap_z_mm": 0.0,
     "dead_x_mm": 0.0,
-    "dead_z_mm": 0.0
+    "dead_z_mm": 0.0,
+    "stave_clearance_mm": 1.0,
+    "stave_thickness_mm": 0.0
   },
   "n_tracks": 15000,
   "eta_max": 2,

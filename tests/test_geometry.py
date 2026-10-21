@@ -4,21 +4,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dataclasses import replace
 import numpy as np
 import pytest
-from geometry import Geometry, Tracks, make_tracks, evaluate, optimize, module_plot, chip_layout
+from geometry import (Geometry, Tracks, make_tracks, evaluate, optimize, module_plot,
+                      chip_layout, stave_clearance_report, StaveClearanceError)
 
 
-def test_perfect_wide_full_ring():
+def test_full_ring_by_overlapping_staves_is_now_rejected():
     g = Geometry(radius_cm=10, n_staves=80, stave_width_cm=2, stave_length_cm=100, tilt_deg=0,
+                 chips_across=1, modules_z=1, chips_per_module_z=1,
+                 chip_width_cm=2, chip_length_cm=100, eoc_width_mm=0)
+    with pytest.raises(StaveClearanceError):
+        evaluate(g, make_tracks(500, eta_max=0.5, seed=12))
+
+
+def test_valid_nonoverlapping_coverage():
+    g = Geometry(radius_cm=10, n_staves=20, stave_width_cm=2, stave_length_cm=100, tilt_deg=0,
                  chips_across=1, modules_z=1, chips_per_module_z=1,
                  chip_width_cm=2, chip_length_cm=100, eoc_width_mm=0)
     tr = make_tracks(6000, eta_max=0.5, seed=12)
     m = evaluate(g, tr)
-    assert m['eff_all'] == pytest.approx(1.0)
-    assert m['eff_reference'] == pytest.approx(1.0)
+    assert 0.5 < m['eff_all'] < 1
+    assert m['stave_clearance']['valid']
 
 
 def test_dead_area_reduces_efficiency():
-    g = Geometry(n_staves=30, stave_width_cm=5.42, tilt_deg=0, dead_x_mm=0, dead_z_mm=0)
+    g = Geometry(n_staves=24, stave_width_cm=5.42, tilt_deg=3, dead_x_mm=0, dead_z_mm=0)
     tr = make_tracks(12000, eta_max=1.3, seed=4)
     m0 = evaluate(g, tr)
     m1 = evaluate(replace(g, dead_x_mm=0.6, dead_z_mm=0.6), tr)
@@ -135,3 +144,73 @@ def test_eoc_cannot_be_optimized():
 def test_chip_layout_requires_room_on_stave():
     with pytest.raises(ValueError, match='larghezza'):
         Geometry(chip_width_cm=3.0).validate()
+
+
+def test_nominal_clearance_and_default_requirement():
+    g = Geometry()
+    r = stave_clearance_report(g)
+    assert g.stave_clearance_mm == 1.0
+    assert r['valid']
+    assert r['min_clearance_mm'] == pytest.approx(3.0415454313, abs=1.e-6)
+    assert len(r['closest_pair']) == 2
+    assert r['n_violating_pairs'] == 0
+    assert evaluate(g, make_tracks(200))['stave_clearance']['valid']
+
+
+def test_all_pairs_including_intersections_and_ring_wrap():
+    g = Geometry(n_staves=27, tilt_deg=0)
+    r = stave_clearance_report(g)
+    assert not r['valid']
+    assert r['min_clearance_mm'] == pytest.approx(0)
+    assert r['n_violating_pairs'] >= g.n_staves
+    assert 1 in r['violating_staves'] and g.n_staves in r['violating_staves']
+    with pytest.raises(StaveClearanceError) as error:
+        g.validate()
+    assert error.value.report['n_violating_pairs'] == r['n_violating_pairs']
+
+
+def test_minimum_gap_is_a_constraint_not_penetration_tolerance():
+    g = Geometry(n_staves=24, tilt_deg=0)
+    assert stave_clearance_report(g)['min_clearance_mm'] == pytest.approx(1.08468924596)
+    assert g.validate()
+    stricter = replace(g, stave_clearance_mm=1.2)
+    with pytest.raises(StaveClearanceError):
+        stricter.validate()
+    assert stave_clearance_report(replace(g, stave_clearance_mm=1.0))['valid']
+
+
+def test_stave_thickness_reduces_clearance_conservatively():
+    g = Geometry(n_staves=24, tilt_deg=0, stave_thickness_mm=0.2)
+    r = stave_clearance_report(g)
+    assert r['min_clearance_mm'] == pytest.approx(0.88468924596)
+    assert r['conservative_with_thickness']
+    with pytest.raises(StaveClearanceError):
+        g.validate()
+
+
+def test_non_neighbour_pairs_checked():
+    g = Geometry(radius_cm=5, n_staves=8, stave_width_cm=30,
+                 chips_across=1, chip_width_cm=2.6)
+    r = stave_clearance_report(g)
+    assert not r['valid']
+    assert any(p['stave_b'] - p['stave_a'] > 1 and (p['stave_a'], p['stave_b']) != (1,8)
+               for p in r['violating_pairs'])
+
+
+def test_optimizer_skips_intersections_and_keeps_clearance_fixed():
+    g = Geometry(stave_clearance_mm=1.0, stave_thickness_mm=0.05)
+    tr = make_tracks(400, eta_max=1.1, seed=19)
+    rows, details = optimize(g, {'radius_cm': [21,21], 'n_staves': [24,30], 'tilt_deg': [0,0]},
+                             tr, n_candidates=60, return_diagnostics=True)
+    assert details['rejected_clearance'] > 0
+    assert rows
+    assert all(c['min_clearance_mm'] >= g.stave_clearance_mm-1.e-6 for c in rows)
+    assert all('stave_clearance_mm' not in c and 'stave_thickness_mm' not in c for c in rows)
+    assert all(c['n_staves'] == 24 for c in rows)  # larger counts intersect at this tilt
+
+
+def test_cannot_optimize_mechanical_constraint():
+    bounds = {'radius_cm': (20,22), 'n_staves': (23,27), 'tilt_deg': (0,6),
+              'stave_clearance_mm': (0,2)}
+    with pytest.raises(ValueError, match='Bounds non ammessi'):
+        optimize(Geometry(), bounds, make_tracks(200), n_candidates=10)
